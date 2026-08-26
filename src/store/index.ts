@@ -247,7 +247,7 @@ type PersistedAppState = {
 };
 
 export type AppPage =
-  | 'dashboard' | 'keypanel'
+  | 'dashboard' | 'keypanel' | 'downloads'
   | 'analytics' | 'settings' | 'device';
 
 interface AppStore {

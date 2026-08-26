@@ -33,6 +33,35 @@ export type ApiUser = {
   key: string;
 };
 
+export type ApiSoftware = {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  game: string;
+  category: string | null;
+  status: 'live' | 'draft' | 'offline';
+  originalFileName: string | null;
+  fileSize: number;
+  downloadUrl: string | null;
+  downloads: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateSoftwareRequest = {
+  name: string;
+  description?: string;
+  version?: string;
+  game?: string;
+  category?: string;
+  status?: 'live' | 'draft' | 'offline';
+  fileData?: string;
+  fileName?: string;
+  fileSize?: number;
+  downloadUrl?: string;
+};
+
 export type GenerateKeysRequest = {
   plan: string;
   expiry: string;
@@ -226,5 +255,18 @@ export const arcticApi = {
   }),
   resetStaffDevice: (id: string) => request<{ message: string }>(`/api/admin/staff/${encodeURIComponent(id)}/reset-device`, {
     method: 'POST',
+  }),
+  // Software management
+  getSoftware: () => request<ApiSoftware[]>('/api/admin/software'),
+  createSoftware: (payload: CreateSoftwareRequest) => request<ApiSoftware>('/api/admin/software', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  updateSoftware: (id: string, payload: Partial<CreateSoftwareRequest>) => request<ApiSoftware>(`/api/admin/software/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  }),
+  deleteSoftware: (id: string) => request<void>(`/api/admin/software/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
   }),
 };

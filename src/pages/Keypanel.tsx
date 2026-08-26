@@ -31,9 +31,9 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
-import { arcticApi, type ApiCategory, type ApiKey, type ApiOrder, type ApiUser, type StaffAccount } from '../lib/api';
+import { arcticApi, type ApiCategory, type ApiKey, type ApiOrder, type ApiUser, type ApiSoftware, type StaffAccount } from '../lib/api';
 
-type PanelTab = 'overview' | 'keys' | 'loaders' | 'users' | 'staff' | 'orders';
+type PanelTab = 'overview' | 'keys' | 'software' | 'loaders' | 'users' | 'staff' | 'orders';
 type KeyStatus = 'active' | 'expired' | 'revoked';
 type LoaderStatus = 'live' | 'draft' | 'offline';
 type AccountStatus = 'active' | 'suspended' | 'pending';
@@ -96,7 +96,8 @@ const INITIAL_ACCOUNTS: Account[] = []; /* Populated by the backend in the produ
 const TABS: Array<{ id: PanelTab; label: string; icon: React.ElementType }> = [
   { id: 'overview', label: 'Overview', icon: Activity },
   { id: 'keys', label: 'License Keys', icon: KeyRound },
-  { id: 'loaders', label: 'Software', icon: Package },
+  { id: 'software', label: 'Software', icon: Package },
+  { id: 'loaders', label: 'Builds', icon: FileCode },
   { id: 'users', label: 'Users', icon: Users },
   { id: 'orders', label: 'Orders', icon: ShoppingCart },
   { id: 'staff', label: 'Staff', icon: ShieldCheck },
@@ -531,6 +532,10 @@ export function Keypanel() {
   const [showLoaderModal, setShowLoaderModal] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
+  const [showSoftwareModal, setShowSoftwareModal] = useState(false);
+  const [softwareList, setSoftwareList] = useState<ApiSoftware[]>([]);
+  const [softwareForm, setSoftwareForm] = useState({ name: '', description: '', version: '', game: '', category: '', status: 'draft', downloadUrl: '' });
+  const [softwareFile, setSoftwareFile] = useState<{ name: string; data: string; size: number } | null>(null);
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<ApiOrder | null>(null);
   const [orderCategory, setOrderCategory] = useState('');
@@ -549,18 +554,20 @@ export function Keypanel() {
 
   const syncApiData = async () => {
     try {
-      const [remoteKeys, remoteUsers, remoteStaff, remoteCategories, remoteOrders] = await Promise.all([
+      const [remoteKeys, remoteUsers, remoteStaff, remoteCategories, remoteOrders, remoteSoftware] = await Promise.all([
         arcticApi.getKeys(),
         arcticApi.getUsers(),
         arcticApi.getStaff(),
         arcticApi.getCategories(),
         arcticApi.getOrders(),
+        arcticApi.getSoftware(),
       ]);
       setKeys(remoteKeys.map(mapApiKey));
       setAccounts(remoteUsers.map(mapApiUser));
       setStaff(remoteStaff.map(mapStaffRow));
       setCategories(remoteCategories);
       setOrders(remoteOrders);
+      setSoftwareList(remoteSoftware);
       setApiOnline(true);
       return true;
     } catch {
@@ -764,6 +771,75 @@ export function Keypanel() {
     }
   };
 
+  const createSoftware = async () => {
+    const name = softwareForm.name.trim();
+    if (!name) { toast.error('Software name is required'); return; }
+    try {
+      const payload: Record<string, unknown> = {
+        name,
+        description: softwareForm.description.trim(),
+        version: softwareForm.version.trim() || '1.0.0',
+        game: softwareForm.game.trim(),
+        category: softwareForm.category.trim(),
+        status: softwareForm.status,
+        downloadUrl: softwareForm.downloadUrl.trim(),
+      };
+      if (softwareFile) {
+        payload.fileData = softwareFile.data;
+        payload.fileName = softwareFile.name;
+        payload.fileSize = softwareFile.size;
+      }
+      const created = await arcticApi.createSoftware(payload as any);
+      setSoftwareList((current) => [created, ...current]);
+      setSoftwareForm({ name: '', description: '', version: '', game: '', category: '', status: 'draft', downloadUrl: '' });
+      setSoftwareFile(null);
+      setShowSoftwareModal(false);
+      setActiveTab('software');
+      setApiOnline(true);
+      toast.success(`Software "${name}" created`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not create software');
+    }
+  };
+
+  const deleteSoftware = async (id: string) => {
+    const sw = softwareList.find((item) => item.id === id);
+    if (!sw) return;
+    try {
+      await arcticApi.deleteSoftware(id);
+      setSoftwareList((current) => current.filter((item) => item.id !== id));
+      setApiOnline(true);
+      toast.success(`Software "${sw.name}" deleted`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not delete software');
+    }
+  };
+
+  const toggleSoftwareStatus = async (id: string) => {
+    const sw = softwareList.find((item) => item.id === id);
+    if (!sw) return;
+    const nextStatus = sw.status === 'live' ? 'offline' : 'live';
+    try {
+      const updated = await arcticApi.updateSoftware(id, { status: nextStatus });
+      setSoftwareList((current) => current.map((item) => item.id === id ? updated : item));
+      setApiOnline(true);
+      toast.success(`Software "${sw.name}" ${nextStatus === 'live' ? 'is now live' : 'taken offline'}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not update software status');
+    }
+  };
+
+  const handleSoftwareFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(',')[1] || '';
+      setSoftwareFile({ name: file.name, data: base64, size: file.size });
+    };
+    reader.readAsDataURL(file);
+  };
+
   const createStaff = async () => {
     const username = staffForm.username.trim();
     const password = staffForm.password;
@@ -943,6 +1019,48 @@ export function Keypanel() {
       );
     }
 
+    if (activeTab === 'software') {
+      return (
+        <div className="space-y-4">
+          <div className="glass-card overflow-hidden p-0">
+            <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 lg:flex-row lg:items-center lg:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Software catalog</h3><p className="mt-1 text-xs text-frost-600">Manage downloadable software. Upload files or set external URLs. Users see only "Live" entries.</p></div><button onClick={() => setShowSoftwareModal(true)} className="btn-primary py-2 text-xs"><Package size={14} /> Add software</button></div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[800px] text-left">
+                <thead>
+                  <tr className="border-b border-frost-800/60 text-[10px] uppercase tracking-widest text-frost-600">
+                    <th className="px-4 py-3 font-semibold">Software</th>
+                    <th className="px-4 py-3 font-semibold">Game / Target</th>
+                    <th className="px-4 py-3 font-semibold">File</th>
+                    <th className="px-4 py-3 font-semibold">Downloads</th>
+                    <th className="px-4 py-3 font-semibold">Status</th>
+                    <th className="px-4 py-3 text-right font-semibold">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {softwareList.map((sw) => (
+                    <tr key={sw.id} className="border-b border-frost-800/30 last:border-0 hover:bg-frost-800/20">
+                      <td className="px-4 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-violet-500/20 bg-violet-500/10 text-violet-400"><Package size={16} /></div>
+                          <div><p className="text-sm font-semibold text-frost-200">{sw.name}</p><p className="mt-0.5 text-[10px] text-frost-600">v{sw.version} · {sw.description || 'No description'}</p></div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 text-sm text-frost-300">{sw.game || '—'}</td>
+                      <td className="px-4 py-3.5"><p className="text-xs text-frost-400">{sw.originalFileName || sw.downloadUrl ? '📁 ' + (sw.originalFileName || 'External URL') : '—'}</p>{sw.fileSize > 0 && <p className="text-[10px] text-frost-600">{(sw.fileSize / 1024 / 1024).toFixed(1)} MB</p>}</td>
+                      <td className="px-4 py-3.5 text-sm font-medium text-frost-200">{sw.downloads}</td>
+                      <td className="px-4 py-3.5"><StatusBadge status={sw.status} /></td>
+                      <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => toggleSoftwareStatus(sw.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-arctic-500/10 hover:text-arctic-400" title={sw.status === 'live' ? 'Take offline' : 'Set live'}><RefreshCw size={14} /></button><button onClick={() => deleteSoftware(sw.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete software"><Trash2 size={14} /></button></div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {softwareList.length === 0 && <div className="px-6 py-14 text-center text-sm text-frost-500">No software entries yet. Add your first build to make it available for download.</div>}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     if (activeTab === 'loaders') {
       return (
         <div className="glass-card overflow-hidden p-0">
@@ -1090,6 +1208,49 @@ export function Keypanel() {
         <Modal title="Add software build" description="Register a build in the software registry as a draft." icon={Package} onClose={() => setShowLoaderModal(false)}>
           <div className="space-y-4 p-5"><div className="grid grid-cols-2 gap-3"><div><label className="label">Software name *</label><input autoFocus value={loaderForm.name} onChange={(event) => setLoaderForm({ ...loaderForm, name: event.target.value })} className="input text-sm" placeholder="e.g. Arctic Core" /></div><div><label className="label">Version *</label><input value={loaderForm.version} onChange={(event) => setLoaderForm({ ...loaderForm, version: event.target.value })} className="input text-sm" placeholder="e.g. 2.5.0" /></div></div><div className="grid grid-cols-2 gap-3"><div><label className="label">Target</label><SelectField value={loaderForm.game} onChange={(value) => setLoaderForm({ ...loaderForm, game: value })}><option>Multi-game</option><option>Game client</option><option>Legacy</option><option>Internal</option></SelectField></div><div><label className="label">Platform</label><SelectField value={loaderForm.platform} onChange={(value) => setLoaderForm({ ...loaderForm, platform: value })}><option>Windows</option><option>Linux</option><option>macOS</option></SelectField></div></div><div><label className="label">Release notes</label><textarea value={loaderForm.notes} onChange={(event) => setLoaderForm({ ...loaderForm, notes: event.target.value })} className="input min-h-24 resize-y text-sm" placeholder="What changed in this build?" /></div></div>
           <div className="flex gap-2 border-t border-frost-800/60 px-5 py-4"><button onClick={() => setShowLoaderModal(false)} className="btn-secondary flex-1 text-xs">Cancel</button><button onClick={createLoader} className="btn-primary flex-1 text-xs"><Plus size={14} /> Add software</button></div>
+        </Modal>
+      )}
+
+      {showSoftwareModal && (
+        <Modal title="Add downloadable software" description="Upload a file or set an external URL. Users will see and download live entries." icon={Package} onClose={() => setShowSoftwareModal(false)}>
+          <div className="space-y-4 p-5">
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="label">Software name *</label><input autoFocus value={softwareForm.name} onChange={(event) => setSoftwareForm({ ...softwareForm, name: event.target.value })} className="input text-sm" placeholder="e.g. CS2 Cheat" /></div>
+              <div><label className="label">Version</label><input value={softwareForm.version} onChange={(event) => setSoftwareForm({ ...softwareForm, version: event.target.value })} className="input text-sm" placeholder="e.g. 2.1.0" /></div>
+            </div>
+            <div><label className="label">Description</label><textarea value={softwareForm.description} onChange={(event) => setSoftwareForm({ ...softwareForm, description: event.target.value })} className="input min-h-16 resize-y text-sm" placeholder="What does this software do? Features, requirements, etc." /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className="label">Game / Target</label><input value={softwareForm.game} onChange={(event) => setSoftwareForm({ ...softwareForm, game: event.target.value })} className="input text-sm" placeholder="e.g. CS2, Valorant" /></div>
+              <div><label className="label">Category</label><input value={softwareForm.category} onChange={(event) => setSoftwareForm({ ...softwareForm, category: event.target.value })} className="input text-sm" placeholder="e.g. ESP, Aimbot" /></div>
+            </div>
+            <div>
+              <label className="label">External download URL (optional)</label>
+              <input value={softwareForm.downloadUrl} onChange={(event) => setSoftwareForm({ ...softwareForm, downloadUrl: event.target.value })} className="input text-sm" placeholder="https://example.com/file.exe" />
+              <p className="mt-1 text-[10px] text-frost-600">If provided, users are redirected here. Leave empty to upload a file below.</p>
+            </div>
+            <div>
+              <label className="label">Upload file</label>
+              <div className="relative">
+                <input type="file" onChange={handleSoftwareFile} className="absolute inset-0 cursor-pointer opacity-0" />
+                <div className="flex items-center gap-3 rounded-xl border border-dashed border-frost-700/50 bg-frost-900/30 px-4 py-4 text-center transition-colors hover:border-arctic-400/40">
+                  <Upload size={18} className="text-frost-500" />
+                  <div>
+                    <p className="text-xs font-medium text-frost-300">{softwareFile ? softwareFile.name : 'Click to browse or drag a file'}</p>
+                    {softwareFile && <p className="mt-0.5 text-[10px] text-frost-600">{(softwareFile.size / 1024 / 1024).toFixed(1)} MB</p>}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label className="label">Status</label>
+              <SelectField value={softwareForm.status} onChange={(value) => setSoftwareForm({ ...softwareForm, status: value })}>
+                <option value="draft">Draft</option>
+                <option value="live">Live (visible to users)</option>
+                <option value="offline">Offline</option>
+              </SelectField>
+            </div>
+          </div>
+          <div className="flex gap-2 border-t border-frost-800/60 px-5 py-4"><button onClick={() => { setShowSoftwareModal(false); setSoftwareFile(null); }} className="btn-secondary flex-1 text-xs">Cancel</button><button onClick={createSoftware} className="btn-primary flex-1 text-xs"><Package size={14} /> Add software</button></div>
         </Modal>
       )}
     </div>

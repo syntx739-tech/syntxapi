@@ -31,6 +31,7 @@ const DISCORD_WEBHOOK_URL = process.env.ARCTIC_DISCORD_WEBHOOK_URL || '';
 const STAFF_ORDER_WEBHOOK_URL = process.env.ARCTIC_STAFF_ORDER_WEBHOOK_URL || '';
 const PUBLIC_API_URL = (process.env.ARCTIC_PUBLIC_API_URL || `http://${HOST}:${PORT}`).replace(/\/$/, '');
 const ALLOWED_ORIGIN = process.env.ARCTIC_ALLOWED_ORIGIN || '*';
+const SOFTWARE_DIR = path.join(path.dirname(DATA_FILE), 'software');
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — the browser stays logged in
 const RESET_TTL_MS = 10 * 60 * 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -47,11 +48,12 @@ function loadData() {
       staffUsers: Array.isArray(data.staffUsers) ? data.staffUsers : [],
       categories: Array.isArray(data.categories) ? data.categories : [],
       orders: Array.isArray(data.orders) ? data.orders : [],
+      software: Array.isArray(data.software) ? data.software : [],
       admin: data.admin && typeof data.admin === 'object' ? data.admin : null,
       resetRequests: Array.isArray(data.resetRequests) ? data.resetRequests : [],
     };
   } catch {
-    return { keys: [], users: [], staffUsers: [], categories: [], orders: [], admin: null, resetRequests: [] };
+    return { keys: [], users: [], staffUsers: [], categories: [], orders: [], software: [], admin: null, resetRequests: [] };
   }
 }
 
@@ -272,6 +274,24 @@ function publicOrder(order, includeFulfilledKeys = false) {
       .map((key) => publicKey(key, null));
   }
   return result;
+}
+
+function publicSoftware(sw) {
+  return {
+    id: sw.id,
+    name: sw.name,
+    description: sw.description,
+    version: sw.version,
+    game: sw.game,
+    category: sw.category || null,
+    status: sw.status,
+    originalFileName: sw.originalFileName || null,
+    fileSize: sw.fileSize || 0,
+    downloadUrl: sw.downloadUrl || null,
+    downloads: sw.downloads || 0,
+    createdAt: sw.createdAt,
+    updatedAt: sw.updatedAt,
+  };
 }
 
 function findKey(value) {
@@ -1115,6 +1135,148 @@ async function handle(request, response) {
       user.status = input.status;
       saveData();
       return empty(response);
+    }
+
+    // ── Software management ──────────────────────────────────────────────
+
+    if (request.method === 'GET' && pathname === '/api/admin/software') {
+      return json(response, 200, (database.software || []).map(publicSoftware));
+    }
+
+    if (request.method === 'POST' && pathname === '/api/admin/software') {
+      const input = await body(request);
+      const name = String(input.name || '').trim();
+      const description = String(input.description || '').trim();
+      const version = String(input.version || '').trim();
+      const game = String(input.game || '').trim();
+      const category = String(input.category || '').trim();
+      const status = String(input.status || 'draft').trim();
+      const fileData = String(input.fileData || '').trim(); // base64 encoded
+      const fileName = String(input.fileName || '').trim();
+      const fileSize = Number(input.fileSize) || 0;
+      const downloadUrl = String(input.downloadUrl || '').trim(); // optional external URL
+
+      if (!name) return json(response, 400, { error: 'Software name is required.', code: 'INVALID_SOFTWARE' });
+
+      let savedFileName = '';
+      let savedFileSize = fileSize;
+
+      if (fileData) {
+        const buf = Buffer.from(fileData, 'base64');
+        savedFileSize = buf.length;
+        savedFileName = `${id('sw')}-${fileName || 'file'}`;
+        const filePath = path.join(SOFTWARE_DIR, savedFileName);
+        fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
+        fs.writeFileSync(filePath, buf);
+      }
+
+      const software = {
+        id: id('sw'),
+        name,
+        description,
+        version,
+        game,
+        category,
+        status: ['live', 'draft', 'offline'].includes(status) ? status : 'draft',
+        fileName: savedFileName,
+        originalFileName: fileName,
+        fileSize: savedFileSize,
+        downloadUrl,
+        downloads: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (!database.software) database.software = [];
+      database.software.unshift(software);
+      saveData();
+      return json(response, 200, publicSoftware(software));
+    }
+
+    const swUpdate = pathname.match(/^\/api\/admin\/software\/([^/]+)$/);
+    if (request.method === 'PATCH' && swUpdate) {
+      const sw = (database.software || []).find((item) => item.id === decodeURIComponent(swUpdate[1]));
+      if (!sw) return json(response, 404, { error: 'Software not found.' });
+      const input = await body(request);
+      if (input.name != null) sw.name = String(input.name).trim() || sw.name;
+      if (input.description != null) sw.description = String(input.description).trim();
+      if (input.version != null) sw.version = String(input.version).trim() || sw.version;
+      if (input.game != null) sw.game = String(input.game).trim();
+      if (input.category != null) sw.category = String(input.category).trim();
+      if (input.status != null && ['live', 'draft', 'offline'].includes(input.status)) sw.status = input.status;
+      if (input.downloadUrl != null) sw.downloadUrl = String(input.downloadUrl).trim();
+
+      // Optional file replacement
+      const fileData = String(input.fileData || '').trim();
+      const fileName = String(input.fileName || '').trim();
+      if (fileData && fileName) {
+        // Delete old file
+        if (sw.fileName) {
+          const oldPath = path.join(SOFTWARE_DIR, sw.fileName);
+          try { fs.unlinkSync(oldPath); } catch { /* ignore */ }
+        }
+        const buf = Buffer.from(fileData, 'base64');
+        sw.fileName = `${id('sw')}-${fileName}`;
+        sw.originalFileName = fileName;
+        sw.fileSize = buf.length;
+        fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
+        fs.writeFileSync(path.join(SOFTWARE_DIR, sw.fileName), buf);
+      }
+
+      sw.updatedAt = new Date().toISOString();
+      saveData();
+      return json(response, 200, publicSoftware(sw));
+    }
+
+    const swDelete = pathname.match(/^\/api\/admin\/software\/([^/]+)$/);
+    if (request.method === 'DELETE' && swDelete) {
+      const index = (database.software || []).findIndex((item) => item.id === decodeURIComponent(swDelete[1]));
+      if (index < 0) return json(response, 404, { error: 'Software not found.' });
+      const sw = database.software[index];
+      if (sw.fileName) {
+        try { fs.unlinkSync(path.join(SOFTWARE_DIR, sw.fileName)); } catch { /* ignore */ }
+      }
+      database.software.splice(index, 1);
+      saveData();
+      return empty(response);
+    }
+
+    // ── Public software endpoints (for loader + website) ──────────────────
+
+    if (request.method === 'GET' && pathname === '/api/software') {
+      const list = (database.software || []).filter((sw) => sw.status === 'live').map(publicSoftware);
+      return json(response, 200, list);
+    }
+
+    const swDownload = pathname.match(/^\/api\/software\/([^/]+)\/download$/);
+    if (request.method === 'GET' && swDownload) {
+      const sw = (database.software || []).find((item) => item.id === decodeURIComponent(swDownload[1]));
+      if (!sw) return json(response, 404, { error: 'Software not found.' });
+
+      // External URL download
+      if (sw.downloadUrl && !sw.fileName) {
+        sw.downloads = (sw.downloads || 0) + 1;
+        saveData();
+        return json(response, 200, { downloadUrl: sw.downloadUrl, software: publicSoftware(sw) });
+      }
+
+      // Local file download
+      if (!sw.fileName) return json(response, 404, { error: 'No file available for download.' });
+      const filePath = path.join(SOFTWARE_DIR, sw.fileName);
+      if (!fs.existsSync(filePath)) return json(response, 404, { error: 'File not found on server.' });
+
+      sw.downloads = (sw.downloads || 0) + 1;
+      saveData();
+
+      const downloadName = sw.originalFileName || sw.fileName;
+      response.writeHead(200, {
+        ...corsHeaders(),
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${downloadName}"`,
+        'Content-Length': fs.statSync(filePath).size,
+      });
+      fs.createReadStream(filePath).pipe(response);
+      return;
     }
 
     return json(response, 404, { error: 'Not found.' });

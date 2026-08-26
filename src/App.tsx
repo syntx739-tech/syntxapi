@@ -12,12 +12,14 @@ import { Keypanel } from './pages/Keypanel';
 import { Analytics } from './pages/Analytics';
 import { SettingsPage } from './pages/Settings';
 import { Device } from './pages/Device';
+import { DownloadsPage } from './pages/Downloads';
 import { arcticApi } from './lib/api';
 import { applyThemeColors } from './lib/themeColors';
 
 const PAGE_COMPONENTS = {
   dashboard: Dashboard,
   keypanel: Keypanel,
+  downloads: DownloadsPage,
   analytics: Analytics,
   settings: SettingsPage,
   device: Device,
