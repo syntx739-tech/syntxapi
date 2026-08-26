@@ -242,7 +242,10 @@ async function storageUpload(remotePath, buffer) {
 }
 
 function storagePublicUrl(remotePath) {
-  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/${remotePath}`;
+  // Encode each path segment so file names with spaces, parentheses, etc.
+  // produce a valid URL (a raw space in a Location header breaks .NET HttpClient).
+  const encoded = String(remotePath).split('/').map(encodeURIComponent).join('/');
+  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/${encoded}`;
 }
 
 async function loadRemoteData() {
