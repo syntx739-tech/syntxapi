@@ -57,6 +57,7 @@ export type ApiSoftware = {
   category: string | null;
   status: 'live' | 'draft' | 'offline';
   originalFileName: string | null;
+  imageFileName: string | null;
   fileSize: number;
   downloadUrl: string | null;
   downloads: number;
@@ -126,7 +127,7 @@ export type StaffAccount = {
     enabled: boolean;
   };
   quota: {
-    entries: Array<{ plan: string; limit: number; used: number; remaining: number; orderKeys: number; bonusKeys?: number }>;
+    entries: Array<{ plan: string; limit: number; used: number; remaining: number; orderKeys: number; bonusKeys?: number; quotaBonus?: number }>;
     totals: { used: number; orderKeys: number; bonusKeys?: number };
   };
 };
@@ -255,6 +256,7 @@ export const arcticApi = {
   createStaff: (payload: { username: string; password: string; discordName: string; level?: number }) => request<StaffAccount & { rewardKeys?: ApiKey[] }>('/api/admin/staff', { method: 'POST', body: JSON.stringify(payload) }),
   setStaffStatus: (id: string, status: 'active' | 'suspended') => request<void>(`/api/admin/staff/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   setStaffLevel: (id: string, level: number) => request<{ staff: StaffAccount; rewardKeys: ApiKey[] }>(`/api/admin/staff/${encodeURIComponent(id)}/level`, { method: 'PATCH', body: JSON.stringify({ level }) }),
+  setStaffQuota: (id: string, plan: string, amount: number) => request<{ staff: StaffAccount }>(`/api/admin/staff/${encodeURIComponent(id)}/quota`, { method: 'PATCH', body: JSON.stringify({ plan, amount }) }),
   deleteStaff: (id: string) => request<void>(`/api/admin/staff/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   resetStaffDevice: (id: string) => request<{ message: string }>(`/api/admin/staff/${encodeURIComponent(id)}/reset-device`, { method: 'POST' }),
   getOrders: () => request<ApiOrder[]>('/api/admin/orders'),

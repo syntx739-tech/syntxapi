@@ -11,7 +11,9 @@ import {
   Copy,
   Download,
   Eye,
+  EyeOff,
   FileCode,
+  Image as ImageIcon,
   KeyRound,
   MoreHorizontal,
   Package,
@@ -32,7 +34,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
-import { arcticApi, type ApiCategory, type ApiKey, type ApiOrder, type ApiUser, type ApiSoftware, type StaffAccount, type LoaderRelease, type UserArchiveEntry } from '../lib/api';
+import { arcticApi, API_BASE_URL, type ApiCategory, type ApiKey, type ApiOrder, type ApiUser, type ApiSoftware, type StaffAccount, type LoaderRelease, type UserArchiveEntry } from '../lib/api';
 
 type PanelTab = 'overview' | 'keys' | 'software' | 'loader' | 'users' | 'archive' | 'staff' | 'orders';
 type KeyStatus = 'active' | 'expired' | 'revoked';
@@ -74,6 +76,7 @@ type StaffRow = {
   createdAt: string;
   quotaUsed: number;
   quotaTotal: number;
+  quotaEntries: StaffAccount['quota']['entries'];
   keys: ApiKey[];
 };
 
@@ -179,7 +182,8 @@ function mapApiUser(user: ApiUser): Account {
 
 function mapStaffRow(staff: StaffAccount): StaffRow {
   const used = staff.quota?.totals?.used ?? 0;
-  const total = (staff.quota?.entries ?? []).reduce((sum, entry) => sum + entry.limit, 0);
+  const entries = staff.quota?.entries ?? [];
+  const total = entries.reduce((sum, entry) => sum + entry.limit, 0);
   return {
     id: staff.id,
     username: staff.username,
@@ -189,6 +193,7 @@ function mapStaffRow(staff: StaffAccount): StaffRow {
     createdAt: staff.createdAt,
     quotaUsed: used,
     quotaTotal: total,
+    quotaEntries: entries,
     keys: (staff.keys ?? []) as ApiKey[],
   };
 }
@@ -395,7 +400,7 @@ function OrderTable({ orders, onCopy, onFulfill, onReject }: { orders: ApiOrder[
   );
 }
 
-function StaffTable({ staff, onToggleStatus, onDelete, onResetDevice, onSetLevel }: { staff: StaffRow[]; onToggleStatus: (id: string) => void; onDelete: (id: string) => void; onResetDevice: (id: string) => void; onSetLevel: (id: string, level: number) => void }) {
+function StaffTable({ staff, onToggleStatus, onDelete, onResetDevice, onSetLevel, onAdjustQuota }: { staff: StaffRow[]; onToggleStatus: (id: string) => void; onDelete: (id: string) => void; onResetDevice: (id: string) => void; onSetLevel: (id: string, level: number) => void; onAdjustQuota: (member: StaffRow) => void }) {
   if (staff.length === 0) return <div className="px-6 py-14 text-center text-sm text-frost-500">No staff accounts yet. Create one to let your team generate keys.</div>;
 
   return (
@@ -404,9 +409,9 @@ function StaffTable({ staff, onToggleStatus, onDelete, onResetDevice, onSetLevel
         <section key={member.id} className="rounded-2xl border border-frost-800/60 bg-frost-900/25 p-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-arctic-500 to-cyan-500 text-xs font-bold text-white">{member.username.slice(0, 2).toUpperCase()}</div><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-frost-100">{member.username}</p><span className="rounded-md border border-arctic-500/20 bg-arctic-500/10 px-2 py-1 text-[10px] font-semibold text-arctic-300">Level {member.level}</span><StatusBadge status={member.status} /></div><p className="mt-1 text-[10px] text-frost-600">{member.discordName} · Created {formatDate(member.createdAt)} · {member.keys.length} keys associated</p></div></div>
-            <div className="flex flex-wrap items-center gap-2"><select value={member.level} onChange={(event) => onSetLevel(member.id, Number(event.target.value))} className="input w-20 px-2 py-1.5 text-[10px]" title="Set staff level">{[0, 1, 2, 3, 4, 5].map((level) => <option key={level} value={level}>Level {level}</option>)}</select><button onClick={() => onToggleStatus(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={member.status === 'suspended' ? 'Reactivate staff account' : 'Suspend staff account'}>{member.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onResetDevice(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-blue-500/10 hover:text-blue-400" title="Reset staff device binding"><RefreshCw size={14} /></button><button onClick={() => onDelete(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete staff account"><Trash2 size={14} /></button></div>
+            <div className="flex flex-wrap items-center gap-2"><select value={member.level} onChange={(event) => onSetLevel(member.id, Number(event.target.value))} className="input w-20 px-2 py-1.5 text-[10px]" title="Set staff level">{[0, 1, 2, 3, 4, 5].map((level) => <option key={level} value={level}>Level {level}</option>)}</select><button onClick={() => onAdjustQuota(member)} className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-medium text-emerald-400 transition-colors hover:bg-emerald-500/10" title="Adjust generation quota"><KeyRound size={14} /> Quota</button><button onClick={() => onToggleStatus(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={member.status === 'suspended' ? 'Reactivate staff account' : 'Suspend staff account'}>{member.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onResetDevice(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-blue-500/10 hover:text-blue-400" title="Reset staff device binding"><RefreshCw size={14} /></button><button onClick={() => onDelete(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete staff account"><Trash2 size={14} /></button></div>
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-3"><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Normal quota</p><p className="mt-1 text-sm font-semibold text-frost-200">{member.quotaUsed} / {member.quotaTotal}</p></div><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Key ownership</p><p className="mt-1 text-sm font-semibold text-frost-200">{member.keys.length} total</p></div><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Attribution</p><p className="mt-1 text-xs text-frost-400">Every key below shows who created or allocated it.</p></div></div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3"><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Total quota</p><p className="mt-1 text-sm font-semibold text-frost-200">{member.quotaUsed} used · {member.quotaTotal} allowed</p><div className="mt-2 flex flex-wrap gap-1">{member.quotaEntries.filter((entry) => (entry.quotaBonus ?? 0) > 0).map((entry) => <span key={entry.plan} className="inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">+{entry.quotaBonus ?? 0} {entry.plan}</span>)}</div></div><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Key ownership</p><p className="mt-1 text-sm font-semibold text-frost-200">{member.keys.length} total</p></div><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Per-plan limit</p><div className="mt-1 flex flex-wrap gap-1">{member.quotaEntries.map((entry) => <span key={entry.plan} className="rounded-md bg-frost-900/60 px-1.5 py-0.5 text-[10px] text-frost-300">{entry.plan.slice(0, 8)} {entry.used}/{entry.limit}</span>)}</div></div></div>
           <div className="mt-4 rounded-xl border border-frost-800/50 bg-frost-950/35 p-3"><div className="mb-2 flex items-center justify-between"><p className="text-[10px] font-semibold uppercase tracking-widest text-frost-600">Keys for {member.username}</p><span className="text-[10px] text-frost-600">Grouped by staff member</span></div>{member.keys.length === 0 ? <p className="py-5 text-center text-xs text-frost-600">No keys associated with this staff member yet.</p> : <div className="grid gap-2 lg:grid-cols-2">{member.keys.map((key) => <div key={key.id} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-frost-800/50 bg-frost-900/40 px-3 py-2"><div className="min-w-0"><code className="block truncate text-[10px] text-frost-200">{key.value}</code><p className="mt-1 text-[10px] text-frost-600">{key.plan} · {key.activatedAt ? `Activated ${formatDate(key.activatedAt)}` : 'Unused — expiry has not started'}</p></div><div className="flex shrink-0 flex-col items-end gap-1"><span className="text-[10px] text-arctic-300">{key.createdBy}</span><span className="text-[10px] text-frost-600">{key.source}</span></div></div>)}</div>}</div>
         </section>
       ))}
@@ -414,7 +419,7 @@ function StaffTable({ staff, onToggleStatus, onDelete, onResetDevice, onSetLevel
   );
 }
 
-function AccountTable({ accounts, onToggleStatus, onReveal }: { accounts: Account[]; onToggleStatus: (id: string) => void; onReveal: (id: string) => void }) {
+function AccountTable({ accounts, onToggleStatus, revealed = [], onToggleReveal }: { accounts: Account[]; onToggleStatus: (id: string) => void; revealed?: string[]; onToggleReveal: (id: string) => void }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[900px] text-left">
@@ -435,10 +440,10 @@ function AccountTable({ accounts, onToggleStatus, onReveal }: { accounts: Accoun
             return (
               <tr key={account.id} className="border-b border-frost-800/30 last:border-0 hover:bg-frost-800/20">
                 <td className="px-4 py-3.5"><div className="flex items-center gap-3"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-arctic-500 to-cyan-500 text-[10px] font-bold text-white">{account.username.slice(0, 2).toUpperCase()}</div><div><p className="text-sm font-medium text-frost-200">{account.username}</p><p className={cn('mt-0.5 text-[10px] capitalize', statusColor)}>{account.status}</p></div></div></td>
-                <td className="px-4 py-3.5"><code className="rounded-lg bg-frost-900/70 px-2.5 py-1.5 text-xs font-medium text-frost-300">{account.password || '—'}</code></td>
+                <td className="px-4 py-3.5"><code className={cn('rounded-lg bg-frost-900/70 px-2.5 py-1.5 text-xs font-medium', revealed.includes(account.id) ? 'text-frost-100' : 'text-frost-400')}>{revealed.includes(account.id) ? (account.password || '—') : '••••••••••'}</code></td>
                 <td className="px-4 py-3.5 text-xs text-frost-500">{formatDate(account.registeredAt)}</td>
                 <td className="px-4 py-3.5"><div className="flex items-center gap-2"><code className="rounded-lg bg-frost-900/70 px-2.5 py-1.5 text-xs font-medium text-frost-200">{account.key || '—'}</code><span className="text-[10px] font-medium text-arctic-400">{account.plan}</span></div></td>
-                <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onToggleStatus(account.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={account.status === 'suspended' ? 'Reactivate account' : 'Suspend account'}>{account.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onReveal(account.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="Reveal password to owner"><Eye size={14} /></button><button className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="More actions"><MoreHorizontal size={14} /></button></div></td>
+                <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onToggleStatus(account.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={account.status === 'suspended' ? 'Reactivate account' : 'Suspend account'}>{account.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onToggleReveal(account.id)} className={cn('rounded-lg p-2 transition-colors', !revealed.includes(account.id) ? 'text-frost-600 hover:bg-frost-800 hover:text-frost-300' : 'text-frost-100 hover:bg-frost-800')} title={revealed.includes(account.id) ? 'Hide password' : 'Show password to owner'}>{revealed.includes(account.id) ? <EyeOff size={14} /> : <Eye size={14} />}</button></div></td>
               </tr>
             );
           })}
@@ -485,6 +490,7 @@ export function Keypanel() {
   const [keyFilter, setKeyFilter] = useState<'all' | KeyStatus>('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [accountFilter, setAccountFilter] = useState<'all' | AccountStatus>('all');
+  const [revealedAccounts, setRevealedAccounts] = useState<string[]>([]);
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
@@ -498,6 +504,7 @@ export function Keypanel() {
   const [generatedKeysForExport, setGeneratedKeysForExport] = useState<string[]>([]);
   const [softwareForm, setSoftwareForm] = useState({ name: '', description: '', version: '', game: '', category: '', status: 'live', downloadUrl: '' });
   const [softwareFile, setSoftwareFile] = useState<{ name: string; data: string; size: number } | null>(null);
+  const [softwareImage, setSoftwareImage] = useState<{ name: string; data: string } | null>(null);
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<ApiOrder | null>(null);
   const [orderCategory, setOrderCategory] = useState('');
@@ -512,6 +519,9 @@ export function Keypanel() {
     key: '',
   });
   const [staffForm, setStaffForm] = useState({ username: '', password: '', discordName: '', level: '0' });
+  const [showQuotaModal, setShowQuotaModal] = useState(false);
+  const [quotaTarget, setQuotaTarget] = useState<StaffRow | null>(null);
+  const [quotaForm, setQuotaForm] = useState({ plan: '1 Day', amount: '5' });
 
   const syncApiData = async () => {
     const results = await Promise.allSettled([
@@ -715,10 +725,15 @@ export function Keypanel() {
         payload.fileName = softwareFile.name;
         payload.fileSize = softwareFile.size;
       }
+      if (softwareImage) {
+        payload.imageData = softwareImage.data;
+        payload.imageFileName = softwareImage.name;
+      }
       const created = await arcticApi.createSoftware(payload as any);
       setSoftwareList((current) => [created, ...current]);
       setSoftwareForm({ name: '', description: '', version: '', game: '', category: '', status: 'live', downloadUrl: '' });
       setSoftwareFile(null);
+      setSoftwareImage(null);
       setShowSoftwareModal(false);
       setActiveTab('software');
       setApiOnline(true);
@@ -762,6 +777,22 @@ export function Keypanel() {
     reader.onload = () => {
       const base64 = (reader.result as string).split(',')[1] || '';
       setSoftwareFile({ name: file.name, data: base64, size: file.size });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSoftwareImage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image must be 5 MB or smaller');
+      event.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(',')[1] || '';
+      setSoftwareImage({ name: file.name, data: base64 });
     };
     reader.readAsDataURL(file);
   };
@@ -866,6 +897,27 @@ export function Keypanel() {
     }
   };
 
+  const openAdjustQuota = (member: StaffRow) => {
+    setQuotaTarget(member);
+    setQuotaForm({ plan: '1 Day', amount: '' });
+    setShowQuotaModal(true);
+  };
+
+  const adjustQuota = async () => {
+    if (!quotaTarget) return;
+    const amount = Math.max(0, Number(quotaForm.amount) || 0);
+    try {
+      const result = await arcticApi.setStaffQuota(quotaTarget.id, quotaForm.plan, amount);
+      setStaff((current) => current.map((item) => item.id === quotaTarget.id ? mapStaffRow(result.staff) : item));
+      setShowQuotaModal(false);
+      setQuotaTarget(null);
+      setApiOnline(true);
+      toast.success(`Quota for ${quotaTarget.username} increased by ${amount} on ${quotaForm.plan}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not update quota');
+    }
+  };
+
   const toggleStaffStatus = async (id: string) => {
     const member = staff.find((item) => item.id === id);
     if (!member) return;
@@ -936,18 +988,31 @@ export function Keypanel() {
     }
   };
 
-  const revealUserPassword = async (id: string) => {
+  const revealUserPassword = async (id: string): Promise<boolean> => {
     try {
       const result = await arcticApi.getUserPassword(id);
       if (!result.password) {
         toast.error('This password was created before secure owner recovery was enabled and cannot be recovered.');
-        return;
+        return false;
       }
       setAccounts((current) => current.map((account) => account.id === id ? { ...account, password: result.password || account.password } : account));
-      toast.success(`Password for ${result.username} revealed to the owner view`);
+      return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not load password');
+      return false;
     }
+  };
+
+  const toggleRevealPassword = async (id: string) => {
+    if (revealedAccounts.includes(id)) {
+      setRevealedAccounts((current) => current.filter((item) => item !== id));
+      return;
+    }
+    const account = accounts.find((item) => item.id === id);
+    const alreadyReal = Boolean(account?.password) && account?.password !== '********' && account?.password !== '•';
+    const ok = alreadyReal ? true : await revealUserPassword(id);
+    if (!ok) return;
+    setRevealedAccounts((current) => current.includes(id) ? current : [...current, id]);
   };
 
   const toggleAccountStatus = async (id: string) => {
@@ -996,7 +1061,7 @@ export function Keypanel() {
 
           <div className="glass-card xl:col-span-2">
             <SectionHeader icon={Users} title="Recently registered users" detail="Latest users in the control plane" action={<button onClick={() => setActiveTab('users')} className="text-xs font-medium text-arctic-400 hover:text-arctic-300">View all</button>} />
-            <AccountTable accounts={accounts.slice(0, 4)} onToggleStatus={toggleAccountStatus} onReveal={revealUserPassword} />
+            <AccountTable accounts={accounts.slice(0, 4)} onToggleStatus={toggleAccountStatus} revealed={revealedAccounts} onToggleReveal={toggleRevealPassword} />
           </div>
 
           <div className="glass-card">
@@ -1032,7 +1097,7 @@ export function Keypanel() {
       return (
         <div className="glass-card overflow-hidden p-0">
           <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 lg:flex-row lg:items-center lg:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Staff accounts</h3><p className="mt-1 text-xs text-frost-600">Accounts created here can sign in on the staff website and generate keys within their quota.</p></div><button onClick={() => setShowStaffModal(true)} className="btn-primary py-2 text-xs"><UserPlus size={14} /> Add staff</button></div>
-          <StaffTable staff={staff} onToggleStatus={toggleStaffStatus} onDelete={deleteStaff} onResetDevice={resetStaffDevice} onSetLevel={setStaffLevel} />
+          <StaffTable staff={staff} onToggleStatus={toggleStaffStatus} onDelete={deleteStaff} onResetDevice={resetStaffDevice} onSetLevel={setStaffLevel} onAdjustQuota={openAdjustQuota} />
         </div>
       );
     }
@@ -1068,7 +1133,11 @@ export function Keypanel() {
                     <tr key={sw.id} className="border-b border-frost-800/30 last:border-0 hover:bg-frost-800/20">
                       <td className="px-4 py-3.5">
                         <div className="flex items-center gap-3">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-violet-500/20 bg-violet-500/10 text-violet-400"><Package size={16} /></div>
+                          {sw.imageFileName ? (
+                            <img src={`${API_BASE_URL}/api/software/${encodeURIComponent(sw.id)}/image`} alt={sw.name} className="h-9 w-9 rounded-xl border border-violet-500/20 object-cover" />
+                          ) : (
+                            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-violet-500/20 bg-violet-500/10 text-violet-400"><Package size={16} /></div>
+                          )}
                           <div><p className="text-sm font-semibold text-frost-200">{sw.name}</p><p className="mt-0.5 text-[10px] text-frost-600">v{sw.version} · {sw.description || 'No description'}</p></div>
                         </div>
                       </td>
@@ -1100,7 +1169,7 @@ export function Keypanel() {
     return (
       <div className="glass-card overflow-hidden p-0">
         <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 lg:flex-row lg:items-center lg:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Registered users</h3><p className="mt-1 text-xs text-frost-600">Every user currently known to this local admin workspace.</p></div><div className="flex flex-col gap-2 sm:flex-row"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-frost-600" /><input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} className="input py-2 pl-9 text-xs sm:w-64" placeholder="Search username, password, or key..." /></div><SelectField value={accountFilter} onChange={(value) => setAccountFilter(value as 'all' | AccountStatus)} className="sm:w-32"><option value="all">All status</option><option value="active">Active</option><option value="pending">Pending</option><option value="suspended">Suspended</option></SelectField><button onClick={() => setShowUserModal(true)} className="btn-primary py-2 text-xs"><UserPlus size={14} /> Add user</button></div></div>
-        <AccountTable accounts={filteredAccounts} onToggleStatus={toggleAccountStatus} onReveal={revealUserPassword} />
+        <AccountTable accounts={filteredAccounts} onToggleStatus={toggleAccountStatus} revealed={revealedAccounts} onToggleReveal={toggleRevealPassword} />
       </div>
     );
   };
@@ -1211,6 +1280,16 @@ export function Keypanel() {
         </Modal>
       )}
 
+      {showQuotaModal && quotaTarget && (
+        <Modal title={`Quota · ${quotaTarget.username}`} description="Increase the amount of keys this staff member can generate per plan." icon={KeyRound} onClose={() => setShowQuotaModal(false)}>
+          <div className="space-y-4 p-5">
+            <div className="rounded-xl border border-frost-800/60 bg-frost-900/40 p-3"><p className="text-[10px] font-semibold uppercase tracking-widest text-frost-600">Current limits</p><div className="mt-2 flex flex-wrap gap-1.5">{quotaTarget.quotaEntries.map((entry) => <span key={entry.plan} className="rounded-md bg-frost-900/70 px-2 py-1 text-[10px] text-frost-300">{entry.plan}: {entry.used}/{entry.limit}{(entry.quotaBonus ?? 0) > 0 ? ` (+${entry.quotaBonus ?? 0})` : ''}</span>)}</div></div>
+            <div className="grid grid-cols-2 gap-3"><div><label className="label">Plan</label><SelectField value={quotaForm.plan} onChange={(value) => setQuotaForm({ ...quotaForm, plan: value })}>{['1 Day', '7 Days', '30 Days', '90 Days', '1 Year', 'Lifetime'].map((plan) => <option key={plan}>{plan}</option>)}</SelectField></div><div><label className="label">Extra quota</label><input value={quotaForm.amount} onChange={(event) => setQuotaForm({ ...quotaForm, amount: event.target.value })} className="input text-sm" type="number" min="0" placeholder="0" /><p className="mt-1.5 text-[10px] text-frost-600">Set 0 to remove the bonus for this plan.</p></div></div>
+          </div>
+          <div className="flex gap-2 border-t border-frost-800/60 px-5 py-4"><button onClick={() => setShowQuotaModal(false)} className="btn-secondary flex-1 text-xs">Cancel</button><button onClick={() => void adjustQuota()} className="btn-primary flex-1 text-xs"><KeyRound size={14} /> Save quota</button></div>
+        </Modal>
+      )}
+
       {showCategoryModal && (
         <Modal title="Manage categories" description="Create and remove key categories to keep your inventory clean and sorted." icon={MoreHorizontal} onClose={() => setShowCategoryModal(false)}>
           <div className="space-y-4 p-5">
@@ -1272,6 +1351,26 @@ export function Keypanel() {
                     {softwareFile && <p className="mt-0.5 text-[10px] text-frost-600">{(softwareFile.size / 1024 / 1024).toFixed(1)} MB</p>}
                   </div>
                 </div>
+              </div>
+            </div>
+            <div>
+              <label className="label">Icon image (optional)</label>
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1">
+                  <input type="file" accept="image/*" onChange={handleSoftwareImage} className="absolute inset-0 cursor-pointer opacity-0" />
+                  <div className="flex items-center gap-3 rounded-xl border border-dashed border-frost-700/50 bg-frost-900/30 px-4 py-4 text-center transition-colors hover:border-arctic-400/40">
+                    <ImageIcon size={18} className="text-frost-500" />
+                    <div>
+                      <p className="text-xs font-medium text-frost-300">{softwareImage ? softwareImage.name : 'Choose an icon (png/jpg)'}</p>
+                      {softwareImage && <p className="mt-0.5 text-[10px] text-frost-600">Loaded — shown on loader cards</p>}
+                    </div>
+                  </div>
+                </div>
+                {softwareImage && (
+                  <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg border border-frost-700/50 bg-frost-900/40">
+                    <img src={`data:image/png;base64,${softwareImage.data}`} alt="icon" className="h-full w-full object-cover" />
+                  </div>
+                )}
               </div>
             </div>
             <div>

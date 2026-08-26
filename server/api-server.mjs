@@ -478,6 +478,7 @@ function publicSoftware(sw) {
     game: sw.game,
     category: sw.category || null,
     status: sw.status,
+    imageFileName: sw.imageFileName || null,
     originalFileName: sw.originalFileName || null,
     fileSize: sw.fileSize || 0,
     downloadUrl: sw.downloadUrl || null,
@@ -714,6 +715,18 @@ function rouletteState(user) {
   };
 }
 
+// Extra generation allowance a staff member can receive from the owner, keyed by plan.
+function staffQuotaBonus(staffId) {
+  const user = database.staffUsers.find((item) => item.id === staffId);
+  const bonus = (user && typeof user.quotaBonus === 'object' && user.quotaBonus) || {};
+  const result = {};
+  for (const [plan, amount] of Object.entries(bonus)) {
+    const value = Number(amount) || 0;
+    if (value > 0) result[plan] = value;
+  }
+  return result;
+}
+
 function staffQuota(staffId) {
   const used = staffUsedQuota(staffId);
   const orderCounts = staffOrderKeyCount(staffId);
@@ -723,15 +736,20 @@ function staffQuota(staffId) {
       bonusCounts[key.plan] = (bonusCounts[key.plan] || 0) + 1;
     }
   }
+  const quotaBonus = staffQuotaBonus(staffId);
   const totalOrderKeys = Object.values(orderCounts).reduce((sum, value) => sum + value, 0);
-  const entries = Object.entries(STAFF_KEY_QUOTA).map(([plan, limit]) => ({
-    plan,
-    limit,
-    used: used[plan] || 0,
-    remaining: Math.max(limit - (used[plan] || 0), 0),
-    orderKeys: orderCounts[plan] || 0,
-    bonusKeys: bonusCounts[plan] || 0,
-  }));
+  const entries = Object.entries(STAFF_KEY_QUOTA).map(([plan, baseLimit]) => {
+    const limit = baseLimit + (Number(quotaBonus[plan]) || 0);
+    return {
+      plan,
+      limit,
+      used: used[plan] || 0,
+      remaining: Math.max(limit - (used[plan] || 0), 0),
+      orderKeys: orderCounts[plan] || 0,
+      bonusKeys: bonusCounts[plan] || 0,
+      quotaBonus: Number(quotaBonus[plan]) || 0,
+    };
+  });
   return { entries, totals: { used: Object.values(used).reduce((sum, value) => sum + value, 0), orderKeys: totalOrderKeys, bonusKeys: Object.values(bonusCounts).reduce((sum, value) => sum + value, 0) } };
 }
 
@@ -1215,9 +1233,11 @@ async function handle(request, response) {
       const input = await body(request);
       const plan = String(input.plan || '');
       const quantity = Math.max(1, Number(input.quantity) || 1);
-      const limit = STAFF_KEY_QUOTA[plan];
+      const baseLimit = STAFF_KEY_QUOTA[plan];
       const level = Math.max(0, Math.min(5, Number(user.level) || 0));
-      if (limit == null || (level < 5 && !Object.prototype.hasOwnProperty.call(STAFF_KEY_QUOTA, plan))) return json(response, 400, { error: 'This key plan is not available to staff.', code: 'INVALID_PLAN' });
+      if (baseLimit == null || (level < 5 && !Object.prototype.hasOwnProperty.call(STAFF_KEY_QUOTA, plan))) return json(response, 400, { error: 'This key plan is not available to staff.', code: 'INVALID_PLAN' });
+      const quotaBonus = staffQuotaBonus(user.id);
+      const limit = baseLimit + (Number(quotaBonus[plan]) || 0);
 
       const used = staffUsedQuota(user.id)[plan] || 0;
       const remaining = Math.max(limit - used, 0);
@@ -1355,6 +1375,19 @@ async function handle(request, response) {
       const rewardKeys = nextLevel > oldLevel ? awardLevelRewards(user, oldLevel, nextLevel) : [];
       saveData();
       return json(response, 200, { staff: publicStaffUser(user, true), rewardKeys: rewardKeys.map((key) => publicKey(key, null)) });
+    }
+
+    const staffQuota = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/quota$/);
+    if (request.method === 'PATCH' && staffQuota) {
+      const user = database.staffUsers.find((item) => item.id === decodeURIComponent(staffQuota[1]));
+      if (!user) return json(response, 404, { error: 'Staff account not found.' });
+      const input = await body(request);
+      const plan = String(input.plan || '').trim();
+      const amount = Math.max(0, Number(input.amount) || 0);
+      if (STAFF_KEY_QUOTA[plan] == null) return json(response, 400, { error: 'Unknown key plan.', code: 'INVALID_PLAN' });
+      user.quotaBonus = { ...(user.quotaBonus && typeof user.quotaBonus === 'object' ? user.quotaBonus : {}), [plan]: amount };
+      saveData();
+      return json(response, 200, { staff: publicStaffUser(user, true) });
     }
 
     const staffDelete = pathname.match(/^\/api\/admin\/staff\/([^/]+)$/);
@@ -1606,6 +1639,8 @@ async function handle(request, response) {
       const fileName = String(input.fileName || '').trim();
       const fileSize = Number(input.fileSize) || 0;
       const downloadUrl = String(input.downloadUrl || '').trim(); // optional external URL
+      const imageData = String(input.imageData || '').trim(); // base64 encoded
+      const imageFileName = String(input.imageFileName || '').trim();
 
       if (!name) return json(response, 400, { error: 'Software name is required.', code: 'INVALID_SOFTWARE' });
       if (status === 'live' && !fileData && !downloadUrl) return json(response, 400, { error: 'Live software needs an uploaded file or an external HTTP(S) URL.', code: 'SOFTWARE_FILE_REQUIRED' });
@@ -1613,6 +1648,7 @@ async function handle(request, response) {
 
       let savedFileName = '';
       let savedFileSize = fileSize;
+      let savedImageFileName = '';
 
       if (fileData) {
         const buf = Buffer.from(fileData, 'base64');
@@ -1621,6 +1657,13 @@ async function handle(request, response) {
         const filePath = path.join(SOFTWARE_DIR, savedFileName);
         fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
         fs.writeFileSync(filePath, buf);
+      }
+
+      if (imageData) {
+        const imageBuf = Buffer.from(imageData, 'base64');
+        fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
+        savedImageFileName = `${id('sw')}-img${path.extname(imageFileName || '.png')}`;
+        fs.writeFileSync(path.join(SOFTWARE_DIR, savedImageFileName), imageBuf);
       }
 
       const software = {
@@ -1635,6 +1678,7 @@ async function handle(request, response) {
         originalFileName: fileName,
         fileSize: savedFileSize,
         downloadUrl,
+        imageFileName: savedImageFileName || null,
         downloads: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -1680,6 +1724,19 @@ async function handle(request, response) {
         fs.writeFileSync(path.join(SOFTWARE_DIR, sw.fileName), buf);
       }
 
+      // Optional image replacement
+      const imageData = String(input.imageData || '').trim();
+      const imageFileName = String(input.imageFileName || '').trim();
+      if (imageData) {
+        if (sw.imageFileName) {
+          try { fs.unlinkSync(path.join(SOFTWARE_DIR, sw.imageFileName)); } catch { /* ignore */ }
+        }
+        const imageBuf = Buffer.from(imageData, 'base64');
+        fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
+        sw.imageFileName = `${id('sw')}-img${path.extname(imageFileName || '.png')}`;
+        fs.writeFileSync(path.join(SOFTWARE_DIR, sw.imageFileName), imageBuf);
+      }
+
       if (sw.status === 'live' && !sw.fileName && !sw.downloadUrl) return json(response, 400, { error: 'Live software needs an uploaded file or an external HTTP(S) URL.', code: 'SOFTWARE_FILE_REQUIRED' });
       sw.updatedAt = new Date().toISOString();
       saveData();
@@ -1693,6 +1750,9 @@ async function handle(request, response) {
       const sw = database.software[index];
       if (sw.fileName) {
         try { fs.unlinkSync(path.join(SOFTWARE_DIR, sw.fileName)); } catch { /* ignore */ }
+      }
+      if (sw.imageFileName) {
+        try { fs.unlinkSync(path.join(SOFTWARE_DIR, sw.imageFileName)); } catch { /* ignore */ }
       }
       database.software.splice(index, 1);
       saveData();
@@ -1784,6 +1844,24 @@ async function handle(request, response) {
     if (request.method === 'GET' && pathname === '/api/software') {
       const list = (database.software || []).filter((sw) => sw.status === 'live').map(publicSoftware);
       return json(response, 200, list);
+    }
+
+    const swImage = pathname.match(/^\/api\/software\/([^/]+)\/image$/);
+    if (request.method === 'GET' && swImage) {
+      const sw = (database.software || []).find((item) => item.id === decodeURIComponent(swImage[1]));
+      if (!sw || !sw.imageFileName) return json(response, 404, { error: 'Image not found.' });
+      const imagePath = path.join(SOFTWARE_DIR, sw.imageFileName);
+      if (!fs.existsSync(imagePath)) return json(response, 404, { error: 'Image not found on server.' });
+      const ext = path.extname(sw.imageFileName).toLowerCase();
+      const mime = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/png';
+      response.writeHead(200, {
+        ...corsHeaders(),
+        'Content-Type': mime,
+        'Cache-Control': 'public, max-age=3600',
+        'Content-Length': fs.statSync(imagePath).size,
+      });
+      fs.createReadStream(imagePath).pipe(response);
+      return;
     }
 
     const swDownload = pathname.match(/^\/api\/software\/([^/]+)\/download$/);

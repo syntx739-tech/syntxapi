@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Search, Bell, Sun, Moon, Settings, ChevronRight,
-  Wifi, WifiOff, Command, User, Zap, Clock,
+  Search, Bell, Sun, Moon, Settings, ChevronRight, Command,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useStore } from '../store';
+import { API_BASE_URL } from '../lib/api';
 
 const PAGE_LABELS: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -24,18 +24,40 @@ type TopbarProps = {
 
 export function Topbar({ adminUsername = 'Admin', onLogout }: TopbarProps) {
   const {
-    currentPage, theme, toggleTheme, device,
+    currentPage, theme, toggleTheme,
     openCommandPalette, openSearch, toggleNotificationPanel, notifications, setPage,
   } = useStore();
 
   const [clock, setClock] = useState(() => new Date());
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+
+  // Ping the hosted API so the status pill reports real connectivity instead of
+  // a placeholder hardware-device state.
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
+        const response = await fetch(`${API_BASE_URL}/api/health`, { method: 'GET', signal: controller.signal });
+        clearTimeout(timeout);
+        setApiOnline(response.ok);
+      } catch {
+        setApiOnline(false);
+      }
+    };
+    void check();
+    const interval = setInterval(() => void check(), 15000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     const t = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
   const unread = notifications.filter((n) => !n.read).length;
-  const isConnected = device.status === 'connected';
+  const connected = apiOnline === true;
+  const checking = apiOnline === null;
 
   const timeStr = clock.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
   const dateStr = clock.toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' });
@@ -76,23 +98,23 @@ export function Topbar({ adminUsername = 'Admin', onLogout }: TopbarProps) {
         <Command size={15} />
       </button>
 
-      {/* Connection status */}
-      <button
-        onClick={() => setPage('device')}
+      {/* API connection status */}
+      <div
         className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl border transition-all"
         style={{
-          background: isConnected ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)',
-          borderColor: isConnected ? 'rgba(16,185,129,0.25)' : 'rgba(245,158,11,0.25)',
+          background: checking ? 'rgba(148,163,184,0.08)' : connected ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+          borderColor: checking ? 'rgba(148,163,184,0.25)' : connected ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)',
         }}
+        title={`API · ${API_BASE_URL}`}
       >
         <div className={cn(
           'w-1.5 h-1.5 rounded-full',
-          isConnected ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)] animate-pulse' : 'bg-amber-400'
+          checking ? 'bg-frost-500' : connected ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)] animate-pulse' : 'bg-red-400'
         )} />
-        <span className={cn('text-xs font-medium', isConnected ? 'text-emerald-400' : 'text-amber-400')}>
-          {isConnected ? 'Connected' : 'Disconnected'}
+        <span className={cn('text-xs font-medium', checking ? 'text-frost-400' : connected ? 'text-emerald-400' : 'text-red-400')}>
+          {checking ? 'Checking…' : connected ? 'Connected' : 'API Offline'}
         </span>
-      </button>
+      </div>
 
       {/* Theme toggle */}
       <motion.button

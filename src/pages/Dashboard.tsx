@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
-  Monitor, Cpu, Zap, Clock, TrendingUp, Grid3x3,
-  Settings, Activity,
-  ChevronRight, Snowflake,
+  Zap, Grid3x3, Settings, Activity, ChevronRight, Snowflake, Server, Wifi, WifiOff,
 } from 'lucide-react';
 import { useStore } from '../store';
-import { cn, formatNumber, timeAgo } from '../lib/utils';
+import { cn, formatNumber } from '../lib/utils';
+import { API_BASE_URL } from '../lib/api';
+
+type ApiHealth = { status: string; service?: string; persistentStorage?: string; warning?: string | null; utc?: string };
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -51,8 +52,37 @@ function StatCard({ icon: Icon, label, value, sub, color = 'arctic', trend }: {
 const ACTIVITY: Array<{ icon: string; text: string; time: string; color: string }> = [];
 
 export function Dashboard() {
-  const { device, analytics, setPage } = useStore();
-  const connected = device.status === 'connected';
+  const { analytics, setPage } = useStore();
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [apiWarning, setApiWarning] = useState<string | null>(null);
+  const [storageMode, setStorageMode] = useState<string>('local-file');
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
+        const response = await fetch(`${API_BASE_URL}/api/health`, { method: 'GET', signal: controller.signal });
+        clearTimeout(timeout);
+        if (response.ok) {
+          const body = await response.json() as ApiHealth;
+          setApiOnline(true);
+          setApiWarning(body.warning ?? null);
+          setStorageMode(body.persistentStorage === 'supabase' ? 'Supabase' : 'Local file');
+        } else {
+          setApiOnline(false);
+        }
+      } catch {
+        setApiOnline(false);
+      }
+    };
+    void check();
+    const interval = setInterval(() => void check(), 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const checking = apiOnline === null;
+  const connected = apiOnline === true;
   const todayUsage = analytics.dailyUsage[analytics.dailyUsage.length - 1]?.count ?? 0;
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="p-6 space-y-6">
@@ -70,8 +100,8 @@ export function Dashboard() {
             <h1 className="text-3xl font-bold text-frost-50">ARCTIC workspace</h1>
             <p className="text-frost-400 mt-1.5">Live control-plane data only — no demo activity is shown.</p>
             <div className="flex items-center gap-2 mt-3">
-              <div className={cn('w-2 h-2 rounded-full', connected ? 'bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(52,211,153,0.8)]' : 'bg-amber-400')} />
-              <span className={cn('text-sm font-medium', connected ? 'text-emerald-400' : 'text-amber-400')}>{connected ? 'Device connected' : 'No device connected'}</span>
+              <div className={cn('w-2 h-2 rounded-full', checking ? 'bg-frost-500' : connected ? 'bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(52,211,153,0.8)]' : 'bg-red-400')} />
+              <span className={cn('text-sm font-medium', checking ? 'text-frost-400' : connected ? 'text-emerald-400' : 'text-red-400')}>{checking ? 'Checking API…' : connected ? 'Connected to ARCTIC API' : 'API offline'}</span>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -89,52 +119,41 @@ export function Dashboard() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-        <StatCard icon={Monitor} label="Device Status" value={connected ? 'Connected' : 'Disconnected'} sub="ARCTIC Keypanel" color={connected ? 'emerald' : 'amber'} />
+        <StatCard icon={Wifi} label="API Connection" value={checking ? 'Checking…' : connected ? 'Connected' : 'Offline'} sub="ARCTIC API server" color={connected ? 'emerald' : 'amber'} />
         <StatCard icon={Zap} label="Total Actions" value={formatNumber(analytics.totalKeyPresses)} sub="Recorded locally" color="violet" />
         <StatCard icon={Activity} label="Today" value={formatNumber(todayUsage)} sub="Recorded locally" color="amber" />
       </div>
 
       {/* Main grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Device info */}
+        {/* API status */}
         <motion.div variants={cardVariants} className="glass-card">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Monitor size={16} className="text-arctic-400" />
-              <span className="font-semibold text-frost-200 text-sm">Device Status</span>
+              <Server size={16} className="text-arctic-400" />
+              <span className="font-semibold text-frost-200 text-sm">API Status</span>
             </div>
-            <button onClick={() => setPage('device')} className="text-xs text-arctic-400 hover:text-arctic-300 flex items-center gap-1">
-              Details <ChevronRight size={12} />
-            </button>
+            <span className={cn('text-[10px] font-semibold uppercase tracking-widest', connected ? 'text-emerald-400' : 'text-red-400')}>{checking ? 'Checking' : connected ? 'Online' : 'Offline'}</span>
           </div>
           <div className="space-y-3">
             {[
-              { label: 'Device', value: device.name },
-              { label: 'Firmware', value: device.firmware },
-              { label: 'Connection', value: device.connection.toUpperCase() },
-              { label: 'Polling Rate', value: `${device.pollingRate}Hz` },
-              { label: 'Temperature', value: `${device.temperature}°C` },
-              { label: 'Storage', value: `${device.storage.used}/${device.storage.total} KB` },
+              { label: 'Service', value: 'ARCTIC API' },
+              { label: 'Host', value: API_BASE_URL.replace(/^https?:\/\//, '') },
+              { label: 'Storage', value: checking ? '…' : storageMode },
+              { label: 'Last check', value: checking ? '…' : connected ? 'Responding' : 'Unreachable' },
             ].map(({ label, value }) => (
               <div key={label} className="flex items-center justify-between">
                 <span className="text-xs text-frost-500">{label}</span>
-                <span className="text-xs text-frost-200 font-medium font-mono">{value}</span>
+                <span className="text-xs text-frost-200 font-medium font-mono truncate max-w-[60%]">{value}</span>
               </div>
             ))}
           </div>
-          {/* Storage bar */}
-          <div className="mt-4">
-            <div className="flex justify-between text-[10px] text-frost-600 mb-1">
-              <span>Storage</span>
-              <span>{Math.round(device.storage.used / device.storage.total * 100)}%</span>
-            </div>
-            <div className="h-1.5 rounded-full bg-frost-800/50">
-              <div
-                className="h-full rounded-full bg-arctic-500"
-                style={{ width: `${(device.storage.used / device.storage.total) * 100}%` }}
-              />
-            </div>
-          </div>
+          {apiWarning && (
+            <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">{apiWarning}</div>
+          )}
+          {!connected && !checking && (
+            <div className="mt-4 flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-300"><WifiOff size={13} />The API could not be reached — check the hosted service.</div>
+          )}
         </motion.div>
 
         {/* Activity feed */}

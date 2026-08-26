@@ -1,12 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence, useAnimationFrame, useMotionValue } from 'framer-motion';
 import {
   Activity, Check, Copy, Gift, KeyRound, LogOut, Minus, Package,
   Plus, RefreshCw, ShoppingCart, Sparkles, Trophy, Users, X, Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
-import { ArcticApiError, staffApi, type StaffKey, type StaffOrder, type StaffQuota, type StaffRoulette, type StaffUser } from './api';
+import { staffApi, type StaffKey, type StaffOrder, type StaffQuota, type StaffRoulette, type StaffUser } from './api';
 
 type PanelTab = 'overview' | 'orders';
 type OrderLine = { plan: string; quantity: number };
@@ -21,6 +21,64 @@ const LEVEL_INFO = [
   { level: 4, name: 'Lead', detail: 'Includes analytics access.', bonus: '4 spins per day, 1× 90 Days, 2× 30 Days and 1× 7 Days keys when promoted.' },
   { level: 5, name: 'Manager', detail: 'Expanded keypanel permissions, but never owner-account controls.', bonus: '4 spins per day and 1× Lifetime key when promoted.' },
 ];
+
+type RouletteOutcome = { result: string; key: StaffKey | null };
+
+type RouletteSlot = { kind: 'key' | 'miss'; plan?: '1 Day' | '7 Days' | '1 Year' };
+
+const ROULETTE_SLOT_ANGLE = 360 / 9;
+const ROULETTE_SLOTS: RouletteSlot[] = [
+  { kind: 'key', plan: '1 Day' },
+  { kind: 'miss' },
+  { kind: 'key', plan: '7 Days' },
+  { kind: 'miss' },
+  { kind: 'key', plan: '1 Year' },
+  { kind: 'miss' },
+  { kind: 'key', plan: '1 Day' },
+  { kind: 'miss' },
+  { kind: 'key', plan: '1 Day' },
+];
+
+function resultMatchesSlot(result: string, slot: RouletteSlot): boolean {
+  const normalized = result.toLowerCase();
+  return slot.kind === 'miss' ? normalized.includes('no prize') || normalized.includes('no reward') || normalized.includes('nothing') : normalized === slot.plan?.toLowerCase();
+}
+
+function rouletteSlotForResult(result: string): number {
+  const matches = ROULETTE_SLOTS.flatMap((slot, index) => resultMatchesSlot(result, slot) ? [index] : []);
+  return matches[Math.floor(Math.random() * matches.length)] ?? 0;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function RouletteWheel({ rotationValue, waiting, outcome }: { rotationValue: ReturnType<typeof useMotionValue<number>>; waiting: boolean; outcome: RouletteOutcome | null }) {
+  return <div className="flex flex-col items-center">
+    <div className="relative h-72 w-72 sm:h-80 sm:w-80" aria-live="polite">
+      <div className="absolute left-1/2 top-0 z-30 -translate-x-1/2 drop-shadow-[0_0_10px_rgba(251,191,36,0.7)]"><div className="h-0 w-0 border-l-[11px] border-r-[11px] border-t-[22px] border-l-transparent border-r-transparent border-t-amber-300" /></div>
+      <motion.div style={{ rotate: rotationValue }} className="absolute inset-3 rounded-full border-2 border-amber-400/40 p-2 shadow-[0_0_45px_rgba(14,165,233,0.16)]">
+        <div className="relative h-full w-full rounded-full border border-white/10 bg-[conic-gradient(from_-20deg,rgba(14,165,233,0.28),rgba(245,158,11,0.2),rgba(14,165,233,0.28),rgba(245,158,11,0.2),rgba(14,165,233,0.28))] shadow-inner shadow-black/40">
+          {ROULETTE_SLOTS.map((slot, index) => {
+            const slotAngle = index * ROULETTE_SLOT_ANGLE - 90;
+            const isKey = slot.kind === 'key';
+            return <div key={`${slot.kind}-${slot.plan ?? 'miss'}-${index}`} className="absolute left-1/2 top-1/2" style={{ transform: `translate(-50%, -50%) rotate(${slotAngle}deg) translateY(-90px) rotate(${-slotAngle}deg)` }}>
+              <div className={cn('flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 shadow-lg backdrop-blur-sm', isKey ? 'border-arctic-300/40 bg-frost-950/80 text-arctic-200 shadow-arctic-500/20' : 'border-red-400/40 bg-red-950/80 text-red-300 shadow-red-500/15')}>
+                {isKey ? <KeyRound size={15} /> : <X size={16} strokeWidth={3.5} />}
+                <span className="whitespace-nowrap text-[9px] font-black uppercase tracking-wide">{isKey ? slot.plan : 'No prize'}</span>
+              </div>
+            </div>;
+          })}
+          <div className="absolute left-1/2 top-1/2 z-10 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-4 border-frost-950 bg-gradient-to-br from-arctic-400 to-cyan-600 text-white shadow-[0_0_25px_rgba(14,165,233,0.6)]"><KeyRound size={25} /></div>
+        </div>
+      </motion.div>
+    </div>
+    {waiting && <p className="mt-2 text-xs font-medium text-amber-300">The wheel is spinning...</p>}
+    {!waiting && outcome && <AnimatePresence mode="wait"><motion.div key={`${outcome.result}-${outcome.key?.id ?? 'miss'}`} initial={{ opacity: 0, y: 8, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} className={cn('mt-2 flex items-center gap-3 rounded-2xl border px-4 py-3', outcome.key ? 'border-arctic-400/30 bg-arctic-500/10' : 'border-red-400/30 bg-red-500/10')}>              <div className={cn('flex h-10 w-10 items-center justify-center rounded-full', outcome.key ? 'bg-arctic-400/15 text-arctic-300' : 'bg-red-500/15 text-red-300')}>{outcome.key ? <KeyRound size={21} /> : <X size={24} strokeWidth={3} />}</div>
+      <div><p className={cn('text-[10px] font-black uppercase tracking-[0.18em]', outcome.key ? 'text-arctic-300' : 'text-red-300')}>{outcome.key ? 'Key won' : 'No prize'}</p><p className="text-sm font-bold text-frost-100">{outcome.key ? outcome.key.plan : 'Try again tomorrow'}</p>{outcome.key && <p className="text-[10px] text-frost-500">Valid for {outcome.key.plan.toLowerCase()} after first use</p>}</div>
+    </motion.div></AnimatePresence>}
+  </div>;
+}
 
 function formatDate(value: string | null): string {
   if (!value) return 'Not activated';
@@ -107,7 +165,12 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
   const [discordName, setDiscordName] = useState('');
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [spinning, setSpinning] = useState(false);
+  const [waitingForRouletteResult, setWaitingForRouletteResult] = useState(false);
+  const [rouletteOutcome, setRouletteOutcome] = useState<RouletteOutcome | null>(null);
   const [placing, setPlacing] = useState(false);
+
+  const wheelRotation = useMotionValue(0);
+  const spinStateRef = useRef<{ phase: 'idle' | 'spinning' | 'ticking'; velocity: number; elapsed: number; target: number; pendingOutcome: RouletteOutcome | null }>({ phase: 'idle', velocity: 0, elapsed: 0, target: 0, pendingOutcome: null });
 
   const sync = async () => {
     try {
@@ -130,6 +193,56 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
 
   useEffect(() => { void sync(); }, []);
 
+  useAnimationFrame((delta) => {
+    const state = spinStateRef.current;
+    if (state.phase === 'idle') return;
+    const dtSeconds = Math.min(delta / 1000, 0.05);
+    const current = ((wheelRotation.get() % 360) + 360) % 360;
+
+    if (state.phase === 'spinning') {
+      // Real friction model: angular velocity decays toward zero, wheel slows
+      // smoothly before the final stick-slip stage begins.
+      state.velocity -= 560 * dtSeconds;
+      if (state.velocity < 0) state.velocity = 0;
+      wheelRotation.set(wheelRotation.get() + state.velocity * dtSeconds);
+      if (state.velocity <= 0) {
+        state.phase = 'ticking';
+        state.elapsed = 0;
+      }
+      return;
+    }
+
+    // Stick-slip: advance whole slots with an increasing dwell time, so the
+    // wheel visibly clicks slot-by-slot and then locks exactly on the target.
+    const toTarget = ((state.target - current) % 360 + 360) % 360;
+    const ticksLeft = toTarget / ROULETTE_SLOT_ANGLE; // slots remaining
+    // Longer dwell as we approach the last few slots → realistic casino decel.
+    const dwell = 0.16 + ticksLeft * 0.045 + (ticksLeft < 1 ? 0.08 : 0);
+    state.elapsed += dtSeconds;
+    if (state.elapsed >= dwell && toTarget > 0.6) {
+      wheelRotation.set(wheelRotation.get() + Math.min(ROULETTE_SLOT_ANGLE, toTarget));
+      state.elapsed = 0;
+      const after = ((wheelRotation.get() % 360) + 360) % 360;
+      if ((((state.target - after) % 360) + 360) % 360 < 0.6) {
+        wheelRotation.set(state.target);
+        state.phase = 'idle';
+        setSpinning(false);
+        setWaitingForRouletteResult(false);
+        const outcome = state.pendingOutcome;
+        state.pendingOutcome = null;
+        if (outcome) {
+          setRouletteOutcome(outcome);
+          if (outcome.key) {
+            setKeys((current) => outcome.key ? [outcome.key, ...current] : current);
+            toast.success(`Roulette reward: ${outcome.result}`);
+          } else {
+            toast(outcome.result, { icon: <X size={16} className="text-red-400" /> });
+          }
+        }
+      }
+    }
+  });
+
   const quotaByPlan = useMemo(() => new Map((quota?.entries ?? []).map((entry) => [entry.plan, entry])), [quota]);
   const level = staffUser?.level ?? 0;
   const visibleKeys = useMemo(() => Array.from(new Map(keys.map((key) => [key.id, key])).values()), [keys]);
@@ -148,16 +261,37 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
 
   const spin = async () => {
     setSpinning(true);
+    setWaitingForRouletteResult(true);
+    setRouletteOutcome(null);
     try {
-      const result = await staffApi.spinRoulette();
+      const [result] = await Promise.all([staffApi.spinRoulette(), wait(500)]);
+      const slotIndex = rouletteSlotForResult(result.result);
+      // Pointer (top, 0°) must land on the centre of the winning slot.
+      const slotCenter = slotIndex * ROULETTE_SLOT_ANGLE;
+      const desired = ((90 - slotCenter) % 360 + 360) % 360;
+      const now = ((wheelRotation.get() % 360) + 360) % 360;
+      const revolutions = 6 + Math.floor(Math.random() * 3);
+      const travelled = ((desired - now) % 360 + 360) % 360;
+      const distance = revolutions * 360 + travelled;
+      const target = wheelRotation.get() + distance;
+      // Initial impulse such that friction coasts most of the way; the last
+      // slots are finished by the stick-slip phase.
+      const velocity = Math.sqrt(2 * 560 * distance) * 1.03;
+      spinStateRef.current = {
+        phase: 'spinning',
+        velocity,
+        elapsed: 0,
+        target,
+        pendingOutcome: { result: result.result, key: result.key },
+      };
       setRoulette(result.roulette);
-      if (result.key) { setKeys((current) => [result.key as StaffKey, ...current]); toast.success(`Roulette reward: ${result.result}`); }
-      else toast(result.result, { icon: '🎲' });
       await sync();
     } catch (error) {
+      setWaitingForRouletteResult(false);
+      setSpinning(false);
       const message = error instanceof Error ? error.message : 'Roulette failed';
       toast.error(message);
-    } finally { setSpinning(false); }
+    }
   };
 
   const addToCart = (plan: string) => setCart((current) => { const existing = current.find((item) => item.plan === plan); return existing ? current.map((item) => item.plan === plan ? { ...item, quantity: item.quantity + 1 } : item) : [...current, { plan, quantity: 1 }]; });
@@ -183,7 +317,7 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
       <main className="relative flex-1 overflow-auto"><AnimatePresence mode="wait"><motion.div key={activeTab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="absolute inset-0 overflow-auto">
         {activeTab === 'overview' ? <div className="mx-auto max-w-[1500px] space-y-6 p-6">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between"><div><div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-arctic-400"><span className="h-1.5 w-1.5 rounded-full bg-arctic-400" />Staff console / License issuance</div><h1 className="text-2xl font-bold tracking-tight text-frost-50 sm:text-3xl">Staff Keypanel</h1><p className="mt-1.5 text-sm text-frost-500">Generate keys from the six quota cards. Unused keys start their expiry clock only after first use.</p></div></div>
-          {level >= 2 && roulette?.enabled && <div className="glass-card border border-amber-500/20 bg-amber-500/5"><div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"><div className="flex items-start gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/20 bg-amber-500/10 text-amber-300"><Gift size={19} /></div><div><h3 className="text-sm font-semibold text-frost-100">Daily roulette</h3><p className="mt-1 text-xs text-frost-500">Rewards: 3× 1 Day, 1× 7 Days, 1× 1 Year, 4× no prize.</p><p className="mt-1 text-[10px] text-amber-300">{roulette.spinsRemaining} of {roulette.dailyLimit} spins remaining · resets at midnight UTC</p></div></div><button onClick={() => void spin()} disabled={spinning || roulette.spinsRemaining <= 0} className="btn-primary min-w-36 justify-center bg-amber-500/20 text-amber-200 hover:bg-amber-500/30"><Sparkles size={15} />{spinning ? 'Spinning...' : 'Spin roulette'}</button></div></div>}
+          {level >= 2 && roulette?.enabled && <div className="glass-card border border-amber-500/20 bg-amber-500/5"><div className="flex flex-col gap-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/20 bg-amber-500/10 text-amber-300"><Gift size={19} /></div><div><h3 className="text-sm font-semibold text-frost-100">Daily roulette</h3><p className="mt-1 text-xs text-frost-500">Spin the circular wheel and land on a real reward.</p><p className="mt-1 text-[10px] text-amber-300">{roulette.spinsRemaining} of {roulette.dailyLimit} spins remaining · resets at midnight UTC</p></div></div><button onClick={() => void spin()} disabled={spinning || roulette.spinsRemaining <= 0} className="btn-primary min-w-36 justify-center bg-amber-500/20 text-amber-200 hover:bg-amber-500/30"><Sparkles size={15} />{spinning ? 'Spinning...' : 'Spin roulette'}</button></div><div className="grid items-center gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]"><RouletteWheel rotationValue={wheelRotation} waiting={waitingForRouletteResult} outcome={rouletteOutcome} /><div className="space-y-3"><div className="rounded-xl border border-frost-800/60 bg-frost-950/30 p-4"><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-frost-600">Wheel rewards</p><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><span className="flex items-center gap-1.5 text-arctic-300"><KeyRound size={13} />3× 1 Day</span><span className="flex items-center gap-1.5 text-arctic-300"><KeyRound size={13} />1× 7 Days</span><span className="flex items-center gap-1.5 text-arctic-300"><KeyRound size={13} />1× 1 Year</span><span className="flex items-center gap-1.5 text-red-300"><X size={14} strokeWidth={3} />4× No prize</span></div></div><p className="text-[11px] leading-relaxed text-frost-500">Winning keys are shown with their duration. Unused keys stay active until the first use; a red X means no key was won.</p></div></div></div></div>}
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">{(quota?.entries ?? []).map((entry) => <QuotaCard key={entry.plan} plan={entry.plan} used={entry.used} limit={entry.limit} remaining={entry.remaining} orderKeys={entry.orderKeys} onGenerate={() => void generateOne(entry.plan)} />)}</div>
           {level >= 4 && staffUser?.permissions?.analytics && <div className="glass-card"><div className="mb-4 flex items-center gap-2"><Activity size={16} className="text-arctic-400" /><div><h3 className="text-sm font-semibold text-frost-100">Staff analytics</h3><p className="text-xs text-frost-600">Live counters from this account</p></div></div><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl border border-frost-800/50 bg-frost-900/30 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Generated</p><p className="mt-1 text-xl font-bold text-frost-100">{generatedCount}</p></div><div className="rounded-xl border border-frost-800/50 bg-frost-900/30 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Activated</p><p className="mt-1 text-xl font-bold text-frost-100">{keys.filter((key) => key.activatedAt).length}</p></div><div className="rounded-xl border border-frost-800/50 bg-frost-900/30 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Orders / bonus</p><p className="mt-1 text-xl font-bold text-frost-100">{orderCount + bonusCount}</p></div></div></div>}
           {level >= 5 && staffUser?.permissions?.fullKeypanel && <div className="glass-card overflow-hidden p-0"><div className="border-b border-frost-800/60 p-4"><h3 className="text-sm font-semibold text-frost-100">Full keypanel view</h3><p className="mt-1 text-xs text-frost-600">Level 5 can inspect all license keys. Owner account controls remain unavailable.</p></div><KeyTable keys={fullKeypanelKeys} onCopy={copyToClipboard} /></div>}

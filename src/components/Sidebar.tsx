@@ -2,8 +2,8 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Grid3x3, BarChart3, Settings,
-  ChevronLeft, ChevronRight, Snowflake, Wifi, HelpCircle,
-  Circle, AlertTriangle, Download, Info,
+  ChevronLeft, ChevronRight, Snowflake, HelpCircle,
+  Download, Info,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useStore, type AppPage } from '../store';
@@ -25,9 +25,8 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export function Sidebar() {
-  const { currentPage, sidebarCollapsed, toggleSidebar, setPage, device, notifications } = useStore();
+  const { currentPage, sidebarCollapsed, toggleSidebar, setPage, notifications } = useStore();
   const unreadCount = notifications.filter((n) => !n.read).length;
-  const isConnected = device.status === 'connected';
 
   return (
     <motion.aside
@@ -105,37 +104,6 @@ export function Sidebar() {
 
       {/* Bottom section */}
       <div className="px-2 pb-4 space-y-2 border-t border-frost-800/50 pt-3">
-        {/* Connection status */}
-        <div
-          className={cn(
-            'flex items-center gap-2.5 px-3 py-2 rounded-xl',
-            sidebarCollapsed && 'justify-center px-0'
-          )}
-          title={sidebarCollapsed ? (isConnected ? 'Device Connected' : 'Device Disconnected') : undefined}
-        >
-          <div className={cn(
-            'w-2 h-2 rounded-full shrink-0',
-            isConnected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]' : 'bg-amber-400'
-          )}>
-          </div>
-          <AnimatePresence>
-            {!sidebarCollapsed && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.12 }}
-                className="min-w-0"
-              >
-                <p className={cn('text-xs font-medium truncate', isConnected ? 'text-emerald-400' : 'text-amber-400')}>
-                  {isConnected ? 'Connected' : 'Disconnected'}
-                </p>
-                <p className="text-frost-600 text-[10px] truncate">ARCTIC Keypanel</p>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
         {/* Help */}
         <button
           className={cn('sidebar-link w-full', sidebarCollapsed && 'justify-center px-0')}
