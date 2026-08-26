@@ -1422,13 +1422,11 @@ async function handle(request, response) {
     if (request.method === 'POST' && pathname === '/api/auth/login') {
       const input = await body(request);
       const username = String(input.username || '').trim();
-      const suppliedKey = String(input.key || '').trim();
       const user = database.users.find((item) => item.username.toLowerCase() === username.toLowerCase());
-      // The license key is required for registration, but not on every later
-      // login. If a key is supplied, it must still match the account exactly.
-      const key = suppliedKey
-        ? findKey(suppliedKey)
-        : database.keys.find((item) => item.id === user?.keyId);
+      // The license key is only used at registration. Logging in is username +
+      // password; the account is permanently bound to its own key, so any
+      // remembered/stale key sent from the loader form is ignored here.
+      const key = database.keys.find((item) => item.id === user?.keyId);
       const valid = Boolean(user && key && user.keyId === key.id && user.status === 'active' && key.status === 'active'
         && !keyIsExpired(key) && verifyPassword(String(input.password || ''), user.passwordHash));
       if (!valid) return json(response, 401, { error: 'Invalid credentials.', code: 'INVALID_CREDENTIALS' });
