@@ -214,6 +214,37 @@ function supabaseHeaders() {
   };
 }
 
+// ── Supabase Storage (survives Render's ephemeral disk) ──────────────────
+
+const SUPABASE_STORAGE_BUCKET = process.env.ARCTIC_SUPABASE_BUCKET || 'software';
+
+async function storageUpload(remotePath, buffer) {
+  if (!REMOTE_STATE_ENABLED) return false;
+  try {
+    const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${SUPABASE_STORAGE_BUCKET}/${remotePath}?upsert=true`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/octet-stream',
+      },
+      body: buffer,
+    });
+    if (!response.ok) {
+      console.error(`Storage upload failed for ${remotePath}: ${response.status} ${await response.text().catch(() => '')}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error(`Storage upload error for ${remotePath}: ${error.message}`);
+    return false;
+  }
+}
+
+function storagePublicUrl(remotePath) {
+  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/${remotePath}`;
+}
+
 async function loadRemoteData() {
   if (!REMOTE_STATE_ENABLED) return false;
   try {
@@ -1647,6 +1678,8 @@ async function handle(request, response) {
       let savedFileName = '';
       let savedFileSize = fileSize;
       let savedImageFileName = '';
+      let savedStoragePath = null;
+      let savedStorageImagePath = null;
 
       if (fileData) {
         const buf = Buffer.from(fileData, 'base64');
@@ -1655,6 +1688,7 @@ async function handle(request, response) {
         const filePath = path.join(SOFTWARE_DIR, savedFileName);
         fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
         fs.writeFileSync(filePath, buf);
+        if (await storageUpload(savedFileName, buf)) savedStoragePath = savedFileName;
       }
 
       if (imageData) {
@@ -1662,6 +1696,7 @@ async function handle(request, response) {
         fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
         savedImageFileName = `${id('sw')}-img${path.extname(imageFileName || '.png')}`;
         fs.writeFileSync(path.join(SOFTWARE_DIR, savedImageFileName), imageBuf);
+        if (await storageUpload(savedImageFileName, imageBuf)) savedStorageImagePath = savedImageFileName;
       }
 
       const software = {
@@ -1677,6 +1712,8 @@ async function handle(request, response) {
         fileSize: savedFileSize,
         downloadUrl,
         imageFileName: savedImageFileName || null,
+        storagePath: savedStoragePath,
+        storageImagePath: savedStorageImagePath,
         downloads: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -1720,6 +1757,7 @@ async function handle(request, response) {
         sw.fileSize = buf.length;
         fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
         fs.writeFileSync(path.join(SOFTWARE_DIR, sw.fileName), buf);
+        sw.storagePath = (await storageUpload(sw.fileName, buf)) ? sw.fileName : sw.storagePath;
       }
 
       // Optional image replacement
@@ -1733,6 +1771,7 @@ async function handle(request, response) {
         fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
         sw.imageFileName = `${id('sw')}-img${path.extname(imageFileName || '.png')}`;
         fs.writeFileSync(path.join(SOFTWARE_DIR, sw.imageFileName), imageBuf);
+        sw.storageImagePath = (await storageUpload(sw.imageFileName, imageBuf)) ? sw.imageFileName : sw.storageImagePath;
       }
 
       if (sw.status === 'live' && !sw.fileName && !sw.downloadUrl) return json(response, 400, { error: 'Live software needs an uploaded file or an external HTTP(S) URL.', code: 'SOFTWARE_FILE_REQUIRED' });
@@ -1848,6 +1887,11 @@ async function handle(request, response) {
     if (request.method === 'GET' && swImage) {
       const sw = (database.software || []).find((item) => item.id === decodeURIComponent(swImage[1]));
       if (!sw || !sw.imageFileName) return json(response, 404, { error: 'Image not found.' });
+      if (sw.storageImagePath) {
+        response.writeHead(302, { ...corsHeaders(), Location: storagePublicUrl(sw.storageImagePath) });
+        response.end();
+        return;
+      }
       const imagePath = path.join(SOFTWARE_DIR, sw.imageFileName);
       if (!fs.existsSync(imagePath)) return json(response, 404, { error: 'Image not found on server.' });
       const ext = path.extname(sw.imageFileName).toLowerCase();
@@ -1872,6 +1916,15 @@ async function handle(request, response) {
         sw.downloads = (sw.downloads || 0) + 1;
         saveData();
         return json(response, 200, { downloadUrl: sw.downloadUrl, software: publicSoftware(sw) });
+      }
+
+      // Storage-backed download (survives Render's ephemeral disk)
+      if (sw.storagePath) {
+        sw.downloads = (sw.downloads || 0) + 1;
+        saveData();
+        response.writeHead(302, { ...corsHeaders(), Location: storagePublicUrl(sw.storagePath) });
+        response.end();
+        return;
       }
 
       // Local file download
