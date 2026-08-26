@@ -1,0 +1,30 @@
+node_modules
+dist
+staff-dist
+2in1-dist
+*.exe
+*.pdb
+*.dll
+*.config
+NexusPlus-main
+WEBSITE FILES
+STAFF WEBSITE
+2in1 WEBSITE
+API key.txt
+start-staff.bat
+start_api.bat
+start_server.bat
+server_checker.bat
+kill_ngrok.bat
+hud.svg
+2in1.html
+staff.html
+index.html
+server/data/arctic-data.json
+server/data/arctic-sessions.json
+server/local.env
+*.log
+tmp
+.freebuff
+arctic-data.json
+arctic-sessions.json

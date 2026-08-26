@@ -1,0 +1,10 @@
+node_modules
+dist
+staff-dist
+2in1-dist
+.git
+WEBSITE FILES
+STAFF WEBSITE
+2in1 WEBSITE
+*.log
+tmp

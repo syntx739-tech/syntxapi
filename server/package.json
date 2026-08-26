@@ -1,0 +1,5 @@
+{
+  "name": "arctic-shared-api",
+  "private": true,
+  "type": "module"
+}
