@@ -44,12 +44,6 @@ export function SearchOverlay() {
         type: 'License Key' as const, id: k.value, title: k.value, subtitle: `${k.plan} · ${k.status}`,
         icon: '🔑', action: () => { setPage('keypanel'); closeSearch(); },
       })),
-    ...readAdminList<{ name: string; version: string; game: string; status: string }>(`arctic-admin-loaders-${ADMIN_STORAGE_VERSION}`)
-      .filter((l) => [l.name, l.version, l.game].some((v) => v.toLowerCase().includes(q)))
-      .map((l) => ({
-        type: 'Loader' as const, id: l.name, title: l.name, subtitle: `v${l.version} · ${l.game} · ${l.status}`,
-        icon: '📦', action: () => { setPage('keypanel'); closeSearch(); },
-      })),
     ...readAdminList<{ username: string; plan: string; key: string; status: string }>(`arctic-admin-accounts-${ADMIN_STORAGE_VERSION}`)
       .filter((a) => [a.username, a.plan, a.key].some((v) => v.toLowerCase().includes(q)))
       .map((a) => ({
@@ -89,7 +83,7 @@ export function SearchOverlay() {
                   ref={inputRef}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search keys, loaders, users..."
+                  placeholder="Search keys or users..."
                   className="flex-1 bg-transparent text-frost-100 placeholder-frost-500 focus:outline-none"
                 />
                 {query && (

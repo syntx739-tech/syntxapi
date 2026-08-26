@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Search, Grid3x3, Settings, Download, Upload,
+  Search, Grid3x3, Settings,
   LayoutDashboard, BarChart3, ArrowRight,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -28,8 +28,6 @@ export function CommandPalette() {
     { id: 'goto-analytics', label: 'Open Analytics', icon: BarChart3, action: () => { setPage('analytics'); closeCommandPalette(); }, category: 'Navigate' },
     { id: 'goto-settings', label: 'Open Settings', icon: Settings, action: () => { setPage('settings'); closeCommandPalette(); }, category: 'Navigate' },
     { id: 'toggle-edit', label: 'Toggle Edit Mode', description: 'Enable/disable keypanel editing', icon: Grid3x3, action: () => { toggleEditMode(); setPage('keypanel'); closeCommandPalette(); }, category: 'Keypanel', keywords: ['edit keys'] },
-    { id: 'export', label: 'Export Configuration', description: 'Export your ARCTIC setup', icon: Download, action: () => { setPage('settings'); closeCommandPalette(); }, category: 'Config' },
-    { id: 'import', label: 'Import Configuration', description: 'Import an ARCTIC config file', icon: Upload, action: () => { setPage('settings'); closeCommandPalette(); }, category: 'Config' },
   ];
 
   const filtered = query.trim() === ''

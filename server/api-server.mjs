@@ -24,14 +24,24 @@ loadLocalEnv();
 
 const PORT = Number(process.env.PORT || 5000) || 5000;
 const HOST = process.env.HOST || '0.0.0.0';
-const DATA_FILE = process.env.ARCTIC_DATA_FILE || path.join(__dirname, 'data', 'arctic-data.json');
+const DATA_DIR = process.env.ARCTIC_DATA_DIR || path.join(__dirname, 'data');
+const DATA_FILE = process.env.ARCTIC_DATA_FILE || path.join(DATA_DIR, 'arctic-data.json');
+const DATA_BACKUP_FILE = `${DATA_FILE}.bak`;
 const ADMIN_USERNAME = process.env.ARCTIC_ADMIN_USERNAME || 'user42';
 const ADMIN_PASSWORD = process.env.ARCTIC_ADMIN_PASSWORD || '';
 const DISCORD_WEBHOOK_URL = process.env.ARCTIC_DISCORD_WEBHOOK_URL || '';
+const KEY_PING_WEBHOOK_URL = process.env.ARCTIC_KEY_PING_WEBHOOK_URL || '';
 const STAFF_ORDER_WEBHOOK_URL = process.env.ARCTIC_STAFF_ORDER_WEBHOOK_URL || '';
-const PUBLIC_API_URL = (process.env.ARCTIC_PUBLIC_API_URL || `http://${HOST}:${PORT}`).replace(/\/$/, '');
+const OWNER_ROLE_ID = String(process.env.ARCTIC_OWNER_ROLE_ID || '').trim();
+const ERROR_WEBHOOK_URL = process.env.ARCTIC_ERROR_WEBHOOK_URL || '';
+const PUBLIC_API_URL = (process.env.ARCTIC_PUBLIC_API_URL || 'https://syntxapi.onrender.com').replace(/\/$/, '');
 const ALLOWED_ORIGIN = process.env.ARCTIC_ALLOWED_ORIGIN || '*';
 const SOFTWARE_DIR = path.join(path.dirname(DATA_FILE), 'software');
+const LOADER_DIR = path.join(path.dirname(DATA_FILE), 'loader');
+const SUPABASE_URL = String(process.env.ARCTIC_SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_SERVICE_KEY = String(process.env.ARCTIC_SUPABASE_SERVICE_KEY || '');
+const SUPABASE_STATE_ID = 'main';
+const REMOTE_STATE_ENABLED = Boolean(SUPABASE_URL && SUPABASE_SERVICE_KEY);
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — the browser stays logged in
 const RESET_TTL_MS = 10 * 60 * 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -39,28 +49,92 @@ const LOGIN_ATTEMPT_LIMIT = 8;
 
 fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
 
-function loadData() {
-  try {
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    return {
-      keys: Array.isArray(data.keys) ? data.keys : [],
-      users: Array.isArray(data.users) ? data.users : [],
-      staffUsers: Array.isArray(data.staffUsers) ? data.staffUsers : [],
-      categories: Array.isArray(data.categories) ? data.categories : [],
-      orders: Array.isArray(data.orders) ? data.orders : [],
-      software: Array.isArray(data.software) ? data.software : [],
-      admin: data.admin && typeof data.admin === 'object' ? data.admin : null,
-      resetRequests: Array.isArray(data.resetRequests) ? data.resetRequests : [],
-    };
-  } catch {
-    return { keys: [], users: [], staffUsers: [], categories: [], orders: [], software: [], admin: null, resetRequests: [] };
-  }
+function emptyData() {
+  return { keys: [], users: [], staffUsers: [], categories: [], orders: [], software: [], loaderReleases: [], userArchive: [], admin: null, resetRequests: [] };
 }
 
-let database = loadData();
+function loadData() {
+  for (const candidate of [DATA_FILE, DATA_BACKUP_FILE]) {
+    try {
+      const data = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      if (!data || typeof data !== 'object') continue;
+      return {
+        keys: Array.isArray(data.keys) ? data.keys : [],
+        users: Array.isArray(data.users) ? data.users : [],
+        staffUsers: Array.isArray(data.staffUsers) ? data.staffUsers : [],
+        categories: Array.isArray(data.categories) ? data.categories : [],
+        orders: Array.isArray(data.orders) ? data.orders : [],
+        software: Array.isArray(data.software) ? data.software : [],
+        loaderReleases: Array.isArray(data.loaderReleases) ? data.loaderReleases : [],
+        userArchive: Array.isArray(data.userArchive) ? data.userArchive : [],
+        admin: data.admin && typeof data.admin === 'object' ? data.admin : null,
+        resetRequests: Array.isArray(data.resetRequests) ? data.resetRequests : [],
+      };
+    } catch {
+      // Try the last known-good backup before falling back to an empty database.
+    }
+  }
+  return emptyData();
+}
+
+function normalizeDatabase(data) {
+  const normalized = {
+    keys: Array.isArray(data?.keys) ? data.keys : [],
+    users: Array.isArray(data?.users) ? data.users : [],
+    staffUsers: Array.isArray(data?.staffUsers) ? data.staffUsers : [],
+    categories: Array.isArray(data?.categories) ? data.categories : [],
+    orders: Array.isArray(data?.orders) ? data.orders : [],
+    software: Array.isArray(data?.software) ? data.software : [],
+    loaderReleases: Array.isArray(data?.loaderReleases) ? data.loaderReleases : [],
+    userArchive: Array.isArray(data?.userArchive) ? data.userArchive : [],
+    admin: data?.admin && typeof data.admin === 'object' ? data.admin : null,
+    resetRequests: Array.isArray(data?.resetRequests) ? data.resetRequests : [],
+  };
+
+  // Older records sometimes stored an expiry timestamp at creation time. Clear it
+  // until the key is actually activated, so every new license follows one rule.
+  const seenKeyValues = new Set();
+  normalized.keys = normalized.keys.filter((key) => {
+    const identity = String(key.value || key.id || '');
+    if (!identity || seenKeyValues.has(identity)) return false;
+    seenKeyValues.add(identity);
+    return true;
+  }).map((key) => ({
+    ...key,
+    activatedAt: key.activatedAt || null,
+    expiresAt: key.activatedAt ? (key.expiresAt || null) : null,
+    uses: Number(key.uses) || 0,
+    maxUses: Math.max(1, Number(key.maxUses) || 1),
+    status: ['active', 'expired', 'revoked'].includes(key.status) ? key.status : 'active',
+  }));
+
+  // Migrate the old plain user shape once. New registrations always use a hash,
+  // while passwordPlain is kept only for the owner-only recovery endpoint.
+  normalized.users = normalized.users.map((user) => {
+    if (user.passwordHash) return user;
+    const legacyPassword = typeof user.password === 'string' ? user.password : '';
+    return {
+      ...user,
+      passwordHash: legacyPassword ? hashPassword(legacyPassword) : '',
+      passwordPlain: legacyPassword || undefined,
+    };
+  });
+
+  normalized.staffUsers = normalized.staffUsers.map((user) => ({
+    ...user,
+    level: Math.max(0, Math.min(5, Number(user.level) || 0)),
+    levelRewardsClaimed: Array.isArray(user.levelRewardsClaimed) ? user.levelRewardsClaimed : [],
+    rouletteSpinsUsed: Number(user.rouletteSpinsUsed) || 0,
+  }));
+  return normalized;
+}
+
+let database = normalizeDatabase(loadData());
 const sessions = new Map();
 const staffSessions = new Map();
 const loginAttempts = new Map();
+let remoteWriteQueue = Promise.resolve();
+let dataReady = Promise.resolve();
 
 // ── Session persistence ───────────────────────────────────────────────────
 const SESSIONS_FILE = path.join(path.dirname(DATA_FILE), 'arctic-sessions.json');
@@ -110,6 +184,7 @@ const STAFF_KEY_QUOTA = {
 // Expiry in days per staff plan. Lifetime has no expiry.
 const STAFF_PLAN_DAYS = {
   '1 Day': 1,
+  '2 Days': 2,
   '7 Days': 7,
   '30 Days': 30,
   '90 Days': 90,
@@ -119,8 +194,92 @@ const STAFF_PLAN_DAYS = {
 
 function saveData() {
   const temporary = `${DATA_FILE}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(database, null, 2), 'utf8');
-  fs.renameSync(temporary, DATA_FILE);
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(database, null, 2), 'utf8');
+    if (fs.existsSync(DATA_FILE)) fs.copyFileSync(DATA_FILE, DATA_BACKUP_FILE);
+    fs.renameSync(temporary, DATA_FILE);
+  } catch (error) {
+    try { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); } catch { /* keep the original error */ }
+    console.error(`Local persistence write failed: ${error.message}`);
+    throw error;
+  }
+  queueRemoteSave();
+}
+
+function supabaseHeaders() {
+  return {
+    apikey: SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+async function loadRemoteData() {
+  if (!REMOTE_STATE_ENABLED) return false;
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/arctic_state?id=eq.${encodeURIComponent(SUPABASE_STATE_ID)}&select=payload`, {
+      headers: supabaseHeaders(),
+    });
+    if (!response.ok) throw new Error(`Remote state read failed (${response.status})`);
+    const rows = await response.json();
+    if (Array.isArray(rows) && rows[0]?.payload && typeof rows[0].payload === 'object') {
+      const remoteDatabase = normalizeDatabase(loadDataFromObject(rows[0].payload));
+      const localHasRecords = hasDatabaseRecords(database);
+      const remoteHasRecords = hasDatabaseRecords(remoteDatabase);
+      // A newly-created remote row can legitimately be empty. Do not let that
+      // empty row erase a local dataset during the first deploy; migrate the
+      // existing data into remote storage instead.
+      if (!remoteHasRecords && localHasRecords) {
+        console.warn('Remote ARCTIC state is empty; preserving local records and migrating them to remote storage.');
+        await persistRemoteData();
+      } else {
+        database = remoteDatabase;
+      }
+      console.log('Loaded ARCTIC data from remote persistent storage.');
+      return true;
+    }
+    await persistRemoteData();
+  } catch (error) {
+    console.error(`Remote persistence unavailable: ${error.message}`);
+  }
+  return false;
+}
+
+function hasDatabaseRecords(data) {
+  return ['keys', 'users', 'staffUsers', 'categories', 'orders', 'software', 'loaderReleases', 'userArchive']
+    .some((collection) => Array.isArray(data?.[collection]) && data[collection].length > 0);
+}
+
+function loadDataFromObject(data) {
+  return {
+    keys: Array.isArray(data.keys) ? data.keys : [],
+    users: Array.isArray(data.users) ? data.users : [],
+    staffUsers: Array.isArray(data.staffUsers) ? data.staffUsers : [],
+    categories: Array.isArray(data.categories) ? data.categories : [],
+    orders: Array.isArray(data.orders) ? data.orders : [],
+    software: Array.isArray(data.software) ? data.software : [],
+    loaderReleases: Array.isArray(data.loaderReleases) ? data.loaderReleases : [],
+    userArchive: Array.isArray(data.userArchive) ? data.userArchive : [],
+    admin: data.admin && typeof data.admin === 'object' ? data.admin : null,
+    resetRequests: Array.isArray(data.resetRequests) ? data.resetRequests : [],
+  };
+}
+
+function queueRemoteSave() {
+  if (!REMOTE_STATE_ENABLED) return;
+  remoteWriteQueue = remoteWriteQueue.then(() => persistRemoteData()).catch((error) => {
+    console.error(`Remote persistence write failed: ${error.message}`);
+  });
+}
+
+async function persistRemoteData() {
+  if (!REMOTE_STATE_ENABLED) return;
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/arctic_state`, {
+    method: 'POST',
+    headers: { ...supabaseHeaders(), Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({ id: SUPABASE_STATE_ID, payload: database, updated_at: new Date().toISOString() }),
+  });
+  if (!response.ok) throw new Error(`Remote state write failed (${response.status})`);
 }
 
 function json(response, status, body) {
@@ -158,7 +317,7 @@ function body(request) {
     let raw = '';
     request.on('data', (chunk) => {
       raw += chunk;
-      if (raw.length > 128 * 1024) request.destroy(new Error('Request body too large.'));
+      if (raw.length > 128 * 1024 * 1024) request.destroy(new Error('Request body too large. Maximum 128 MB.'));
     });
     request.on('end', () => {
       if (!raw) return resolve({});
@@ -180,6 +339,7 @@ function randomSegment(length = 4) {
 
 const PLAN_CODES = {
   '1 Day': '1DAY',
+  '2 Days': '2DAY',
   '7 Days': '7DAY',
   '30 Days': '30DAY',
   '90 Days': '90DAY',
@@ -215,20 +375,46 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function expiryFrom(value, createdAt) {
-  if (!value || value === 'lifetime') return null;
-  const days = Number(value);
-  return Number.isFinite(days) && days > 0
-    ? new Date(new Date(createdAt).getTime() + days * 86400000).toISOString()
-    : null;
+function isHttpUrl(value) {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
-function publicUser(user, key) {
+function expiryDaysFrom(value) {
+  if (!value || value === 'lifetime') return null;
+  const days = Number(value);
+  return Number.isFinite(days) && days > 0 ? days : null;
+}
+
+function activateKey(key, activatedAt = new Date().toISOString()) {
+  if (!key || key.activatedAt) return key;
+  key.activatedAt = activatedAt;
+  const days = Number(key.durationDays);
+  key.expiresAt = Number.isFinite(days) && days > 0
+    ? new Date(new Date(activatedAt).getTime() + days * 86400000).toISOString()
+    : null;
+  return key;
+}
+
+function keyIsExpired(key) {
+  if (!key?.expiresAt) return false;
+  if (new Date(key.expiresAt) > new Date()) return false;
+  if (key.status === 'active') key.status = 'expired';
+  return true;
+}
+
+function publicUser(user, key, includePassword = false) {
   return {
     id: user.id,
     username: user.username,
-    password: '********',
+    password: includePassword && user.passwordPlain ? user.passwordPlain : '********',
     passwordSet: true,
+    passwordAvailable: Boolean(user.passwordPlain),
     plan: key?.plan || 'Unknown',
     status: user.status,
     registeredAt: user.registeredAt,
@@ -240,18 +426,25 @@ function publicKey(key, user) {
   const allocatedStaff = key.allocatedToStaffId
     ? database.staffUsers.find((staffUser) => staffUser.id === key.allocatedToStaffId)
     : null;
+  const generatedByStaff = key.generatedByStaffId
+    ? database.staffUsers.find((staffUser) => staffUser.id === key.generatedByStaffId)
+    : null;
+  const source = key.source || (key.generatedByStaffId ? 'staff' : 'owner');
   return {
     id: key.id,
     value: key.value,
     plan: key.plan,
     category: key.category || null,
     createdAt: key.createdAt,
-    expiresAt: key.expiresAt,
-    status: key.status,
+    activatedAt: key.activatedAt || null,
+    durationDays: key.durationDays ?? null,
+    expiresAt: key.expiresAt || null,
+    status: keyIsExpired(key) ? 'expired' : key.status,
     assignedTo: user?.username || allocatedStaff?.username || null,
-    uses: key.uses,
-    maxUses: key.maxUses,
-    source: key.generatedByStaffId ? 'staff' : 'owner',
+    createdBy: generatedByStaff?.username || (source === 'roulette' ? 'Roulette bonus' : source === 'level' ? 'Level reward' : 'Owner'),
+    uses: key.uses || 0,
+    maxUses: key.maxUses || 1,
+    source,
   };
 }
 
@@ -294,6 +487,21 @@ function publicSoftware(sw) {
   };
 }
 
+function publicLoaderRelease(release) {
+  return {
+    id: release.id,
+    version: release.version,
+    notes: release.notes || '',
+    status: release.status,
+    current: Boolean(release.current),
+    originalFileName: release.originalFileName || null,
+    fileSize: release.fileSize || 0,
+    downloads: release.downloads || 0,
+    createdAt: release.createdAt,
+    updatedAt: release.updatedAt,
+  };
+}
+
 function findKey(value) {
   return database.keys.find((key) => key.value === String(value || '').trim());
 }
@@ -306,23 +514,35 @@ function registerUser(input) {
 
   const key = findKey(keyValue);
   if (!key) return { error: 'License key is invalid.' };
-  if (key.status !== 'active') return { error: 'License key is not active.' };
-  if (key.assignedUserId) return { error: 'License key is already assigned to a user.' };
-  if (key.expiresAt && new Date(key.expiresAt) <= new Date()) return { error: 'License key has expired.' };
+  if (key.status !== 'active' || keyIsExpired(key)) return { error: 'License key is not active.' };
+  if (key.assignedUserId || Number(key.uses) >= Number(key.maxUses || 1)) return { error: 'License key is already assigned to a user.' };
   if (database.users.some((user) => user.username.toLowerCase() === username.toLowerCase())) return { error: 'Username is already registered.' };
 
   const user = {
     id: id('user'),
     username,
     passwordHash: hashPassword(password),
+    // Kept only for the owner-only credential view. Existing hash-only users remain non-recoverable.
+    passwordPlain: password,
     registeredAt: input.registeredAt || new Date().toISOString(),
     status: 'active',
     keyId: key.id,
   };
   database.users.unshift(user);
+  database.userArchive.unshift({
+    id: id('archive'),
+    userId: user.id,
+    username: user.username,
+    registeredAt: user.registeredAt,
+    key: key.value,
+    plan: key.plan,
+    archivedAt: new Date().toISOString(),
+  });
+  activateKey(key);
   key.assignedUserId = user.id;
-  key.uses += 1;
+  key.uses = (key.uses || 0) + 1;
   saveData();
+  void sendKeyActivationWebhook(user, key, 'Registration');
   return { user: publicUser(user, key) };
 }
 
@@ -419,25 +639,37 @@ function findStaffUser(username) {
   return database.staffUsers.find((user) => user.username.toLowerCase() === String(username || '').toLowerCase());
 }
 
-function publicStaffUser(user) {
-  return {
+function publicStaffUser(user, includeKeys = false) {
+  const config = levelConfig(user.level);
+  const result = {
     id: user.id,
     username: user.username,
     discordName: user.discordName || '',
     status: user.status,
+    level: Math.max(0, Math.min(5, Number(user.level) || 0)),
     createdAt: user.createdAt,
     createdBy: user.createdBy || null,
     quota: staffQuota(user.id),
+    roulette: rouletteState(user),
+    permissions: {
+      analytics: Boolean(config.analytics),
+      fullKeypanel: Boolean(config.fullKeypanel),
+    },
   };
+  if (includeKeys) {
+    result.keys = database.keys
+      .filter((key) => key.generatedByStaffId === user.id || key.allocatedToStaffId === user.id)
+      .map((key) => publicKey(key, null));
+  }
+  return result;
 }
 
 // Keys generated by this staff user, grouped by plan.
 function staffUsedQuota(staffId) {
   const counts = {};
   for (const key of database.keys) {
-    if (key.generatedByStaffId === staffId && key.plan) {
-      counts[key.plan] = (counts[key.plan] || 0) + 1;
-    }
+    const isQuotaKey = key.generatedByStaffId === staffId && key.source !== 'roulette' && key.source !== 'level' && !key.bonusType;
+    if (isQuotaKey && key.plan) counts[key.plan] = (counts[key.plan] || 0) + 1;
   }
   return counts;
 }
@@ -446,16 +678,52 @@ function staffUsedQuota(staffId) {
 function staffOrderKeyCount(staffId) {
   const counts = {};
   for (const key of database.keys) {
-    if (key.allocatedToStaffId === staffId && key.plan) {
+    if (key.allocatedToStaffId === staffId && key.source === 'owner' && key.orderId && key.plan) {
       counts[key.plan] = (counts[key.plan] || 0) + 1;
     }
   }
   return counts;
 }
 
+const STAFF_LEVELS = {
+  0: { label: 'Trainee', rouletteSpins: 0, analytics: false, fullKeypanel: false, rewards: [] },
+  1: { label: 'Junior', rouletteSpins: 0, analytics: false, fullKeypanel: false, rewards: [{ plan: '2 Days', quantity: 1 }] },
+  2: { label: 'Reseller', rouletteSpins: 1, analytics: false, fullKeypanel: false, rewards: [{ plan: '1 Day', quantity: 2 }] },
+  3: { label: 'Senior reseller', rouletteSpins: 3, analytics: false, fullKeypanel: false, rewards: [{ plan: '7 Days', quantity: 1 }, { plan: '1 Day', quantity: 2 }] },
+  4: { label: 'Lead', rouletteSpins: 4, analytics: true, fullKeypanel: false, rewards: [{ plan: '90 Days', quantity: 1 }, { plan: '30 Days', quantity: 2 }, { plan: '7 Days', quantity: 1 }] },
+  5: { label: 'Manager', rouletteSpins: 4, analytics: true, fullKeypanel: true, rewards: [{ plan: 'Lifetime', quantity: 1 }] },
+};
+
+function levelConfig(level) {
+  return STAFF_LEVELS[Math.max(0, Math.min(5, Number(level) || 0))];
+}
+
+function rouletteDayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function rouletteState(user) {
+  const config = levelConfig(user.level);
+  const day = rouletteDayKey();
+  const spinsUsed = user.rouletteDay === day ? Number(user.rouletteSpinsUsed) || 0 : 0;
+  return {
+    spinsUsed,
+    spinsRemaining: Math.max(config.rouletteSpins - spinsUsed, 0),
+    dailyLimit: config.rouletteSpins,
+    resetAt: `${new Date(Date.now() + 86400000).toISOString().slice(0, 10)}T00:00:00.000Z`,
+    enabled: config.rouletteSpins > 0,
+  };
+}
+
 function staffQuota(staffId) {
   const used = staffUsedQuota(staffId);
   const orderCounts = staffOrderKeyCount(staffId);
+  const bonusCounts = {};
+  for (const key of database.keys) {
+    if (key.generatedByStaffId === staffId && (key.source === 'roulette' || key.source === 'level' || key.bonusType)) {
+      bonusCounts[key.plan] = (bonusCounts[key.plan] || 0) + 1;
+    }
+  }
   const totalOrderKeys = Object.values(orderCounts).reduce((sum, value) => sum + value, 0);
   const entries = Object.entries(STAFF_KEY_QUOTA).map(([plan, limit]) => ({
     plan,
@@ -463,17 +731,31 @@ function staffQuota(staffId) {
     used: used[plan] || 0,
     remaining: Math.max(limit - (used[plan] || 0), 0),
     orderKeys: orderCounts[plan] || 0,
+    bonusKeys: bonusCounts[plan] || 0,
   }));
-  return { entries, totals: { used: Object.values(used).reduce((sum, value) => sum + value, 0), orderKeys: totalOrderKeys } };
+  return { entries, totals: { used: Object.values(used).reduce((sum, value) => sum + value, 0), orderKeys: totalOrderKeys, bonusKeys: Object.values(bonusCounts).reduce((sum, value) => sum + value, 0) } };
 }
 
 async function sendStaffOrderWebhook(order) {
   if (!STAFF_ORDER_WEBHOOK_URL) return { sent: false, configured: false };
   const itemLines = order.items
-    .map((item) => `${item.quantity}x ${item.plan} keys`)
+    .map((item) => `**${item.quantity}× ${item.plan}**`)
     .join('\n');
+  const ownerMention = OWNER_ROLE_ID ? `<@&${OWNER_ROLE_ID}>` : 'Owner team';
   const payload = {
-    content: `@everyone\n**${order.username}**   ${itemLines}`,
+    content: ownerMention,
+    embeds: [{
+      title: '📦 New key request',
+      description: `**${order.username}** has requested additional license keys.`,
+      color: 3447003,
+      fields: [
+        { name: 'Requested keys', value: itemLines, inline: true },
+        { name: 'Discord', value: order.discordName || 'Not provided', inline: true },
+        { name: 'Received', value: new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(order.createdAt)) + ' UTC', inline: false },
+      ],
+      footer: { text: 'ARCTIC Keypanel • fulfil from the Orders tab' },
+      timestamp: order.createdAt,
+    }],
   };
   try {
     const response = await fetch(STAFF_ORDER_WEBHOOK_URL, {
@@ -494,6 +776,121 @@ function staffPlanExpiry(plan, createdAt) {
   const days = STAFF_PLAN_DAYS[plan];
   if (days == null) return null;
   return new Date(new Date(createdAt).getTime() + days * 86400000).toISOString();
+}
+
+async function sendKeyActivationWebhook(user, key, method) {
+  if (!KEY_PING_WEBHOOK_URL) return false;
+  const payload = {
+    embeds: [{
+      title: '🔐 ARCTIC license activated',
+      description: 'A license key has been used for the first time. Its expiry clock starts now.',
+      color: 3447003,
+      fields: [
+        { name: 'User', value: String(user?.username || 'Unknown'), inline: true },
+        { name: 'Plan', value: String(key?.plan || 'Unknown'), inline: true },
+        { name: 'Key', value: `\`${String(key?.value || 'Unknown')}\``, inline: false },
+        { name: 'Activated via', value: String(method || 'Authentication'), inline: true },
+        { name: 'Expires', value: key?.expiresAt ? new Date(key.expiresAt).toISOString() : 'Never', inline: true },
+      ],
+      footer: { text: 'ARCTIC Keypanel • first use recorded' },
+      timestamp: key?.activatedAt || new Date().toISOString(),
+    }],
+  };
+  try {
+    const response = await fetch(KEY_PING_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function createManagedKey({ plan, ownerId = null, staffId = null, source = 'owner', bonusType = null, category = null, orderId = null, createdAt = new Date().toISOString() }) {
+  let value;
+  do { value = generateKey('ARC', plan); } while (findKey(value));
+  return {
+    id: id('key'),
+    value,
+    plan,
+    createdAt,
+    activatedAt: null,
+    durationDays: STAFF_PLAN_DAYS[plan] ?? null,
+    expiresAt: null,
+    status: 'active',
+    assignedUserId: null,
+    allocatedToStaffId: staffId,
+    generatedByStaffId: source === 'owner' ? null : staffId,
+    generatedByOwner: ownerId,
+    uses: 0,
+    maxUses: 1,
+    category,
+    orderId,
+    source,
+    bonusType,
+  };
+}
+
+function createBonusKeys(staffUser, rewards, level) {
+  const generated = [];
+  const createdAt = new Date().toISOString();
+  for (const reward of rewards) {
+    for (let index = 0; index < reward.quantity; index += 1) {
+      generated.push(createManagedKey({
+        plan: reward.plan,
+        staffId: staffUser.id,
+        source: 'level',
+        bonusType: `level-${level}`,
+        createdAt,
+      }));
+    }
+  }
+  return generated;
+}
+
+function awardLevelRewards(staffUser, oldLevel, newLevel) {
+  const granted = [];
+  const claimed = new Set(Array.isArray(staffUser.levelRewardsClaimed) ? staffUser.levelRewardsClaimed : []);
+  for (let level = oldLevel + 1; level <= newLevel; level += 1) {
+    if (claimed.has(level)) continue;
+    const rewards = levelConfig(level).rewards;
+    const keys = createBonusKeys(staffUser, rewards, level);
+    database.keys.unshift(...keys);
+    granted.push(...keys);
+    claimed.add(level);
+  }
+  staffUser.levelRewardsClaimed = [...claimed].sort((a, b) => a - b);
+  return granted;
+}
+
+function rouletteResult() {
+  // The visible prize mix is 3× 1 Day, 1× 7 Days, 1× 1 Year and 4× no prize.
+  // The one-year result is intentionally rarer than a literal equal-slot wheel.
+  const roll = crypto.randomInt(0, 2000);
+  if (roll < 1200) return { result: 'No prize', plan: null }; // 60%
+  if (roll < 1800) return { result: '1 Day', plan: '1 Day' }; // 30%
+  if (roll < 1990) return { result: '7 Days', plan: '7 Days' }; // 9.5%
+  return { result: '1 Year', plan: '1 Year' }; // 0.5%
+}
+
+async function reportLoaderError(errorCode, details = '') {
+  if (!ERROR_WEBHOOK_URL) return;
+  const payload = {
+    embeds: [{
+      title: 'ARCTIC loader error',
+      description: 'Try again. If u can\'t get it fixd go to the support.',
+      color: 15158332,
+      fields: [{ name: 'Error code', value: String(errorCode || 'UNKNOWN').slice(0, 200), inline: true }, { name: 'Details', value: String(details || 'No details').slice(0, 1000), inline: false }],
+      timestamp: new Date().toISOString(),
+    }],
+  };
+  try {
+    await fetch(ERROR_WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  } catch {
+    // Error reporting must never take the API down.
+  }
 }
 
 async function sendStaffDeviceResetWebhook(username, token) {
@@ -559,6 +956,7 @@ async function handleStaffLogin(request, response) {
   const username = String(input.username || '').trim();
   const password = String(input.password || '');
   const deviceId = String(input.deviceId || '').trim();
+  if (!deviceId) return json(response, 400, { error: 'A device identifier is required.', code: 'DEVICE_ID_REQUIRED' });
   const user = findStaffUser(username);
   if (!user || !verifyPassword(password, user.passwordHash)) {
     return json(response, 401, { error: 'Invalid staff credentials.', code: 'INVALID_CREDENTIALS' });
@@ -700,12 +1098,19 @@ async function handleAdminLogin(request, response) {
 }
 
 async function handle(request, response) {
+  await dataReady;
   if (request.method === 'OPTIONS') return empty(response);
   const url = new URL(request.url, `http://${HOST}:${PORT}`);
   const pathname = url.pathname;
 
   if (request.method === 'GET' && pathname === '/api/health') {
-    return json(response, 200, { status: 'ok', service: 'arctic-api', utc: new Date().toISOString() });
+    return json(response, 200, {
+      status: 'ok',
+      service: 'arctic-api',
+      utc: new Date().toISOString(),
+      persistentStorage: REMOTE_STATE_ENABLED ? 'supabase' : 'local-file',
+      warning: REMOTE_STATE_ENABLED ? null : 'Configure ARCTIC_DATA_DIR on a Render persistent disk or set ARCTIC_SUPABASE_URL and ARCTIC_SUPABASE_SERVICE_KEY. Render Free container storage is ephemeral.',
+    });
   }
 
   if (request.method === 'POST' && pathname === '/api/admin/login') {
@@ -716,7 +1121,17 @@ async function handle(request, response) {
     return handleStaffLogin(request, response);
   }
 
-  if (pathname.startsWith('/api/staff/') && !staffAuthorized(request)) {
+  // The desktop loader never needs the Discord webhook URL. It sends a short
+  // diagnostic to this public proxy, which forwards it server-side.
+  if (request.method === 'POST' && pathname === '/api/loader/error') {
+    const input = await body(request);
+    await reportLoaderError(input.code || 'UNKNOWN', input.details || '');
+    return json(response, 202, { accepted: true });
+  }
+
+  // Device-reset approval links are deliberately public: Discord opens them
+  // before the staff member can authenticate on the new device.
+  if (pathname.startsWith('/api/staff/') && pathname !== '/api/staff/device-reset/approve' && !staffAuthorized(request)) {
     return json(response, 401, { error: 'Staff login required.', code: 'STAFF_LOGIN_REQUIRED' });
   }
 
@@ -785,12 +1200,44 @@ async function handle(request, response) {
       return json(response, 200, publicStaffUser(user).quota);
     }
 
+    if (request.method === 'POST' && pathname === '/api/staff/roulette') {
+      const session = getStaffSession(request);
+      const user = database.staffUsers.find((item) => item.id === session.userId);
+      if (!user) return json(response, 401, { error: 'Staff account no longer exists.', code: 'STAFF_GONE' });
+      if (user.status !== 'active') return json(response, 403, { error: 'This staff account is not active.', code: 'STAFF_SUSPENDED' });
+      const state = rouletteState(user);
+      if (!state.enabled) return json(response, 403, { error: 'Roulette unlocks at staff level 2.', code: 'ROULETTE_LOCKED' });
+      if (state.spinsRemaining <= 0) return json(response, 429, { error: 'No roulette spins remaining today.', code: 'ROULETTE_EXHAUSTED', roulette: state });
+      const day = rouletteDayKey();
+      if (user.rouletteDay !== day) { user.rouletteDay = day; user.rouletteSpinsUsed = 0; }
+      user.rouletteSpinsUsed = (Number(user.rouletteSpinsUsed) || 0) + 1;
+      const result = rouletteResult();
+      let rewardKey = null;
+      if (result.plan) {
+        rewardKey = createManagedKey({ plan: result.plan, staffId: user.id, source: 'roulette', bonusType: 'roulette', createdAt: new Date().toISOString() });
+        database.keys.unshift(rewardKey);
+      }
+      saveData();
+      return json(response, 200, {
+        result: result.result,
+        key: rewardKey ? publicKey(rewardKey, null) : null,
+        roulette: rouletteState(user),
+      });
+    }
+
     if (request.method === 'GET' && pathname === '/api/staff/keys') {
       const session = getStaffSession(request);
       const keys = database.keys
         .filter((key) => key.generatedByStaffId === session.userId || key.allocatedToStaffId === session.userId)
         .map((key) => publicKey(key, null));
       return json(response, 200, keys);
+    }
+
+    if (request.method === 'GET' && pathname === '/api/staff/keypanel/keys') {
+      const session = getStaffSession(request);
+      const user = database.staffUsers.find((item) => item.id === session.userId);
+      if (!user || !levelConfig(user.level).fullKeypanel) return json(response, 403, { error: 'Full keypanel access unlocks at level 5.', code: 'KEYPANEL_LOCKED' });
+      return json(response, 200, database.keys.map((key) => publicKey(key, database.users.find((account) => account.id === key.assignedUserId))));
     }
 
     if (request.method === 'POST' && pathname === '/api/staff/keys') {
@@ -803,7 +1250,8 @@ async function handle(request, response) {
       const plan = String(input.plan || '');
       const quantity = Math.max(1, Number(input.quantity) || 1);
       const limit = STAFF_KEY_QUOTA[plan];
-      if (limit == null) return json(response, 400, { error: 'This key plan is not available to staff.', code: 'INVALID_PLAN' });
+      const level = Math.max(0, Math.min(5, Number(user.level) || 0));
+      if (limit == null || (level < 5 && !Object.prototype.hasOwnProperty.call(STAFF_KEY_QUOTA, plan))) return json(response, 400, { error: 'This key plan is not available to staff.', code: 'INVALID_PLAN' });
 
       const used = staffUsedQuota(user.id)[plan] || 0;
       const remaining = Math.max(limit - used, 0);
@@ -815,16 +1263,12 @@ async function handle(request, response) {
       }
 
       const createdAt = new Date().toISOString();
-      const generated = Array.from({ length: quantity }, () => {
-        let value;
-        do { value = generateKey('ARC', plan); } while (findKey(value));
-        return {
-          id: id('key'), value, plan, createdAt,
-          expiresAt: staffPlanExpiry(plan, createdAt), status: 'active',
-          assignedUserId: null, uses: 0, maxUses: 1,
-          generatedByStaffId: user.id,
-        };
-      });
+      const generated = Array.from({ length: quantity }, () => createManagedKey({
+        plan,
+        staffId: user.id,
+        source: 'staff',
+        createdAt,
+      }));
       database.keys.unshift(...generated);
       saveData();
       return json(response, 200, generated.map((key) => publicKey(key, null)));
@@ -838,8 +1282,7 @@ async function handle(request, response) {
 
       const input = await body(request);
       const discordName = String(input.discordName || '').trim();
-      const rawItems = Array.isArray(input.items) ? input.items : [];
-      const items = rawItems
+      const rawItems = Array.isArray(input.items) ? input.items : [];      const items = rawItems
         .map((item) => ({
           plan: String(item.plan || ''),
           quantity: Math.max(1, Number(item.quantity) || 1),
@@ -890,7 +1333,7 @@ async function handle(request, response) {
     // ── Admin staff management ─────────────────────────────────────────────
 
     if (request.method === 'GET' && pathname === '/api/admin/staff') {
-      return json(response, 200, database.staffUsers.map(publicStaffUser));
+      return json(response, 200, database.staffUsers.map((user) => publicStaffUser(user, true)));
     }
 
     if (request.method === 'POST' && pathname === '/api/admin/staff') {
@@ -910,12 +1353,17 @@ async function handle(request, response) {
         passwordHash: hashPassword(password),
         discordName,
         status: 'active',
+        level: Math.max(0, Math.min(5, Number(input.level) || 0)),
+        levelRewardsClaimed: [],
+        rouletteDay: null,
+        rouletteSpinsUsed: 0,
         createdAt: new Date().toISOString(),
         createdBy: adminSession?.username || null,
       };
       database.staffUsers.unshift(user);
+      const initialRewards = awardLevelRewards(user, -1, user.level);
       saveData();
-      return json(response, 200, publicStaffUser(user));
+      return json(response, 200, { ...publicStaffUser(user, true), rewardKeys: initialRewards.map((key) => publicKey(key, null)) });
     }
 
     const staffStatus = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/status$/);
@@ -927,6 +1375,20 @@ async function handle(request, response) {
       user.status = input.status;
       saveData();
       return empty(response);
+    }
+
+    const staffLevel = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/level$/);
+    if (request.method === 'PATCH' && staffLevel) {
+      const user = database.staffUsers.find((item) => item.id === decodeURIComponent(staffLevel[1]));
+      if (!user) return json(response, 404, { error: 'Staff account not found.' });
+      const input = await body(request);
+      const nextLevel = Number(input.level);
+      if (!Number.isInteger(nextLevel) || nextLevel < 0 || nextLevel > 5) return json(response, 400, { error: 'Staff level must be between 0 and 5.', code: 'INVALID_LEVEL' });
+      const oldLevel = Math.max(0, Math.min(5, Number(user.level) || 0));
+      user.level = nextLevel;
+      const rewardKeys = nextLevel > oldLevel ? awardLevelRewards(user, oldLevel, nextLevel) : [];
+      saveData();
+      return json(response, 200, { staff: publicStaffUser(user, true), rewardKeys: rewardKeys.map((key) => publicKey(key, null)) });
     }
 
     const staffDelete = pathname.match(/^\/api\/admin\/staff\/([^/]+)$/);
@@ -961,11 +1423,21 @@ async function handle(request, response) {
     if (request.method === 'POST' && pathname === '/api/auth/login') {
       const input = await body(request);
       const username = String(input.username || '').trim();
-      const key = findKey(input.key);
+      const suppliedKey = String(input.key || '').trim();
       const user = database.users.find((item) => item.username.toLowerCase() === username.toLowerCase());
-      const valid = user && key && user.keyId === key.id && user.status === 'active' && key.status === 'active'
-        && (!key.expiresAt || new Date(key.expiresAt) > new Date()) && verifyPassword(String(input.password || ''), user.passwordHash);
-      if (!valid) return json(response, 401, { error: 'Invalid credentials.' });
+      // The license key is required for registration, but not on every later
+      // login. If a key is supplied, it must still match the account exactly.
+      const key = suppliedKey
+        ? findKey(suppliedKey)
+        : database.keys.find((item) => item.id === user?.keyId);
+      const valid = Boolean(user && key && user.keyId === key.id && user.status === 'active' && key.status === 'active'
+        && !keyIsExpired(key) && verifyPassword(String(input.password || ''), user.passwordHash));
+      if (!valid) return json(response, 401, { error: 'Invalid credentials.', code: 'INVALID_CREDENTIALS' });
+      if (!key.activatedAt) {
+        activateKey(key);
+        saveData();
+        void sendKeyActivationWebhook(user, key, 'Login');
+      }
       return json(response, 200, { user: publicUser(user, key), sessionToken: crypto.randomBytes(32).toString('base64') });
     }
 
@@ -1001,21 +1473,14 @@ async function handle(request, response) {
         for (let index = 0; index < quantity; index += 1) {
           let value;
           do { value = generateKey('ARC', plan); } while (findKey(value));
-          generated.push({
-            id: id('key'),
-            value,
+          generated.push(createManagedKey({
             plan,
-            createdAt,
-            expiresAt: staffPlanExpiry(plan, createdAt),
-            status: 'active',
-            assignedUserId: null,
-            allocatedToStaffId: staffUser.id,
-            generatedByStaffId: null,
-            uses: 0,
-            maxUses: 1,
+            staffId: staffUser.id,
+            source: 'owner',
             category,
             orderId: order.id,
-          });
+            createdAt,
+          }));
         }
       }
 
@@ -1080,15 +1545,24 @@ async function handle(request, response) {
       const input = await body(request);
       const quantity = Math.max(1, Number(input.quantity) || 1);
       const createdAt = new Date().toISOString();
+      const plan = String(input.plan || 'Lifetime');
       const category = String(input.category || '').trim() || null;
       const generated = Array.from({ length: quantity }, () => {
         let value;
-        do { value = generateKey(input.prefix, input.plan); } while (findKey(value));
+        do { value = generateKey(input.prefix, plan); } while (findKey(value));
         return {
-          id: id('key'), value, plan: input.plan || 'Lifetime', createdAt,
-          expiresAt: expiryFrom(input.expiry, createdAt), status: 'active',
-          assignedUserId: null, uses: 0, maxUses: Math.max(1, Number(input.maxUses) || 1),
+          id: id('key'), value, plan, createdAt,
+          activatedAt: null,
+          durationDays: expiryDaysFrom(input.expiry),
+          expiresAt: null,
+          status: 'active',
+          assignedUserId: null,
+          allocatedToStaffId: null,
+          generatedByStaffId: null,
+          uses: 0,
+          maxUses: Math.max(1, Number(input.maxUses) || 1),
           category,
+          source: 'owner',
         };
       });
       database.keys.unshift(...generated);
@@ -1119,6 +1593,17 @@ async function handle(request, response) {
 
     if (request.method === 'GET' && pathname === '/api/admin/users') {
       return json(response, 200, database.users.map((user) => publicUser(user, database.keys.find((key) => key.id === user.keyId))));
+    }
+
+    const userPassword = pathname.match(/^\/api\/admin\/users\/([^/]+)\/password$/);
+    if (request.method === 'GET' && userPassword) {
+      const user = database.users.find((item) => item.id === decodeURIComponent(userPassword[1]));
+      if (!user) return json(response, 404, { error: 'User not found.' });
+      return json(response, 200, { username: user.username, password: user.passwordPlain || null, recoverable: Boolean(user.passwordPlain) });
+    }
+
+    if (request.method === 'GET' && pathname === '/api/admin/user-archive') {
+      return json(response, 200, (database.userArchive || []).map((entry) => ({ ...entry })));
     }
 
     if (request.method === 'POST' && pathname === '/api/admin/users') {
@@ -1157,6 +1642,8 @@ async function handle(request, response) {
       const downloadUrl = String(input.downloadUrl || '').trim(); // optional external URL
 
       if (!name) return json(response, 400, { error: 'Software name is required.', code: 'INVALID_SOFTWARE' });
+      if (status === 'live' && !fileData && !downloadUrl) return json(response, 400, { error: 'Live software needs an uploaded file or an external HTTP(S) URL.', code: 'SOFTWARE_FILE_REQUIRED' });
+      if (downloadUrl && !isHttpUrl(downloadUrl)) return json(response, 400, { error: 'Download URL must use HTTP or HTTPS.', code: 'INVALID_DOWNLOAD_URL' });
 
       let savedFileName = '';
       let savedFileSize = fileSize;
@@ -1164,7 +1651,7 @@ async function handle(request, response) {
       if (fileData) {
         const buf = Buffer.from(fileData, 'base64');
         savedFileSize = buf.length;
-        savedFileName = `${id('sw')}-${fileName || 'file'}`;
+        savedFileName = `${id('sw')}-${path.basename(fileName || 'file')}`;
         const filePath = path.join(SOFTWARE_DIR, savedFileName);
         fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
         fs.writeFileSync(filePath, buf);
@@ -1204,7 +1691,11 @@ async function handle(request, response) {
       if (input.game != null) sw.game = String(input.game).trim();
       if (input.category != null) sw.category = String(input.category).trim();
       if (input.status != null && ['live', 'draft', 'offline'].includes(input.status)) sw.status = input.status;
-      if (input.downloadUrl != null) sw.downloadUrl = String(input.downloadUrl).trim();
+      if (input.downloadUrl != null) {
+        const nextDownloadUrl = String(input.downloadUrl).trim();
+        if (nextDownloadUrl && !isHttpUrl(nextDownloadUrl)) return json(response, 400, { error: 'Download URL must use HTTP or HTTPS.', code: 'INVALID_DOWNLOAD_URL' });
+        sw.downloadUrl = nextDownloadUrl;
+      }
 
       // Optional file replacement
       const fileData = String(input.fileData || '').trim();
@@ -1216,13 +1707,14 @@ async function handle(request, response) {
           try { fs.unlinkSync(oldPath); } catch { /* ignore */ }
         }
         const buf = Buffer.from(fileData, 'base64');
-        sw.fileName = `${id('sw')}-${fileName}`;
+        sw.fileName = `${id('sw')}-${path.basename(fileName)}`;
         sw.originalFileName = fileName;
         sw.fileSize = buf.length;
         fs.mkdirSync(SOFTWARE_DIR, { recursive: true });
         fs.writeFileSync(path.join(SOFTWARE_DIR, sw.fileName), buf);
       }
 
+      if (sw.status === 'live' && !sw.fileName && !sw.downloadUrl) return json(response, 400, { error: 'Live software needs an uploaded file or an external HTTP(S) URL.', code: 'SOFTWARE_FILE_REQUIRED' });
       sw.updatedAt = new Date().toISOString();
       saveData();
       return json(response, 200, publicSoftware(sw));
@@ -1239,6 +1731,86 @@ async function handle(request, response) {
       database.software.splice(index, 1);
       saveData();
       return empty(response);
+    }
+
+    // ── Loader releases ────────────────────────────────────────────────────
+
+    if (request.method === 'GET' && pathname === '/api/admin/loader/releases') {
+      return json(response, 200, (database.loaderReleases || []).map(publicLoaderRelease));
+    }
+
+    if (request.method === 'POST' && pathname === '/api/admin/loader/releases') {
+      const input = await body(request);
+      const version = String(input.version || '').trim();
+      const notes = String(input.notes || '').trim();
+      const fileData = String(input.fileData || '').trim();
+      const fileName = String(input.fileName || '').trim();
+      if (!version || !fileData || !fileName) return json(response, 400, { error: 'Version and loader file are required.', code: 'INVALID_LOADER_RELEASE' });
+      const fileBuffer = Buffer.from(fileData, 'base64');
+      if (!fileBuffer.length) return json(response, 400, { error: 'The loader file is empty.', code: 'INVALID_LOADER_RELEASE' });
+      fs.mkdirSync(LOADER_DIR, { recursive: true });
+      const releaseId = id('loader');
+      const savedFileName = `${releaseId}-${path.basename(fileName)}`;
+      fs.writeFileSync(path.join(LOADER_DIR, savedFileName), fileBuffer);
+      const makeCurrent = Boolean(input.current);
+      if (makeCurrent) for (const release of (database.loaderReleases || [])) release.current = false;
+      const release = {
+        id: releaseId,
+        version,
+        notes,
+        status: makeCurrent ? 'live' : 'draft',
+        current: makeCurrent,
+        fileName: savedFileName,
+        originalFileName: fileName,
+        fileSize: fileBuffer.length,
+        downloads: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      if (!database.loaderReleases) database.loaderReleases = [];
+      database.loaderReleases.unshift(release);
+      saveData();
+      return json(response, 200, publicLoaderRelease(release));
+    }
+
+    const loaderCurrent = pathname.match(/^\/api\/admin\/loader\/releases\/([^/]+)\/current$/);
+    if (request.method === 'PATCH' && loaderCurrent) {
+      const release = (database.loaderReleases || []).find((item) => item.id === decodeURIComponent(loaderCurrent[1]));
+      if (!release) return json(response, 404, { error: 'Loader release not found.' });
+      for (const item of (database.loaderReleases || [])) { item.current = false; if (item.status === 'live') item.status = 'draft'; }
+      release.current = true;
+      release.status = 'live';
+      release.updatedAt = new Date().toISOString();
+      saveData();
+      return json(response, 200, publicLoaderRelease(release));
+    }
+
+    const loaderDelete = pathname.match(/^\/api\/admin\/loader\/releases\/([^/]+)$/);
+    if (request.method === 'DELETE' && loaderDelete) {
+      const index = (database.loaderReleases || []).findIndex((item) => item.id === decodeURIComponent(loaderDelete[1]));
+      if (index < 0) return json(response, 404, { error: 'Loader release not found.' });
+      const release = database.loaderReleases[index];
+      try { fs.unlinkSync(path.join(LOADER_DIR, release.fileName)); } catch { /* file may be missing after a restart */ }
+      database.loaderReleases.splice(index, 1);
+      saveData();
+      return empty(response);
+    }
+
+    if (request.method === 'GET' && pathname === '/api/loader/latest') {
+      const release = (database.loaderReleases || []).find((item) => item.current && item.status === 'live');
+      return release ? json(response, 200, publicLoaderRelease(release)) : json(response, 404, { error: 'No current loader release.' });
+    }
+
+    if (request.method === 'GET' && pathname === '/api/loader/download') {
+      const release = (database.loaderReleases || []).find((item) => item.current && item.status === 'live');
+      if (!release) return json(response, 404, { error: 'No current loader release.' });
+      const filePath = path.join(LOADER_DIR, release.fileName);
+      if (!fs.existsSync(filePath)) return json(response, 404, { error: 'Current loader file is unavailable.' });
+      release.downloads = (release.downloads || 0) + 1;
+      saveData();
+      response.writeHead(200, { ...corsHeaders(), 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${release.originalFileName || 'Arctic.exe'}"`, 'Content-Length': fs.statSync(filePath).size });
+      fs.createReadStream(filePath).pipe(response);
+      return;
     }
 
     // ── Public software endpoints (for loader + website) ──────────────────
@@ -1286,7 +1858,15 @@ async function handle(request, response) {
   }
 }
 
-ensureAdminRecord();
+dataReady = loadRemoteData().then(() => {
+  ensureAdminRecord();
+  if (!REMOTE_STATE_ENABLED) {
+    console.warn('ARCTIC persistence: local file only. Use a Render persistent disk via ARCTIC_DATA_DIR or configure Supabase before production use.');
+  }
+}).catch((error) => {
+  console.error(`Startup data load failed: ${error.message}`);
+  ensureAdminRecord();
+});
 
 http.createServer((request, response) => {
   handle(request, response).catch((error) => {
@@ -1298,6 +1878,7 @@ http.createServer((request, response) => {
   console.log(`Data file: ${DATA_FILE}`);
   console.log(`Admin login: ${database.admin?.passwordHash ? 'configured' : 'not configured'}`);
   console.log(`Discord reset: ${DISCORD_WEBHOOK_URL && PUBLIC_API_URL ? 'configured' : 'not configured'}`);
+  console.log(`Key activation ping: ${KEY_PING_WEBHOOK_URL ? 'configured' : 'not configured'}`);
   console.log(`Staff orders Discord: ${STAFF_ORDER_WEBHOOK_URL ? 'configured' : 'not configured'}`);
   console.log(`Staff accounts: ${database.staffUsers.length}`);
 });

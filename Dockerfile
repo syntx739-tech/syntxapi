@@ -9,8 +9,9 @@ RUN npm install --production
 # Copy server files
 COPY server/ ./server/
 
-# Create data directory
-RUN mkdir -p server/data
+# Use /var/data as the documented mount point for a Render persistent disk.
+ENV ARCTIC_DATA_DIR=/var/data
+RUN mkdir -p /var/data
 
 # Expose port
 EXPOSE 5000

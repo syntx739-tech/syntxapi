@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Settings, User, Palette, Shield, ChevronRight, Check,
-  LogOut, Key, Trash2, RefreshCw,
+  LogOut, Key, RefreshCw,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useStore } from '../store';
@@ -206,9 +206,6 @@ function AccountSettings() {
         <div className="space-y-2">
           <button onClick={signOut} className="btn-danger text-sm w-full justify-start gap-2">
             <LogOut size={14} /> Sign Out
-          </button>
-          <button className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 text-sm transition-colors">
-            <Trash2 size={14} /> Delete Account
           </button>
         </div>
       </div>

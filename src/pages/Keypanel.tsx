@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Activity,
+  Archive,
   AlertTriangle,
   Ban,
   Calendar,
@@ -31,9 +32,9 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
-import { arcticApi, type ApiCategory, type ApiKey, type ApiOrder, type ApiUser, type ApiSoftware, type StaffAccount } from '../lib/api';
+import { arcticApi, type ApiCategory, type ApiKey, type ApiOrder, type ApiUser, type ApiSoftware, type StaffAccount, type LoaderRelease, type UserArchiveEntry } from '../lib/api';
 
-type PanelTab = 'overview' | 'keys' | 'software' | 'loaders' | 'users' | 'staff' | 'orders';
+type PanelTab = 'overview' | 'keys' | 'software' | 'loader' | 'users' | 'archive' | 'staff' | 'orders';
 type KeyStatus = 'active' | 'expired' | 'revoked';
 type LoaderStatus = 'live' | 'draft' | 'offline';
 type AccountStatus = 'active' | 'suspended' | 'pending';
@@ -47,21 +48,11 @@ type LicenseKey = {
   expiresAt: string;
   status: KeyStatus;
   assignedTo?: string;
+  activatedAt?: string | null;
+  createdBy: string;
+  source: ApiKey['source'];
   uses: number;
   maxUses: number;
-};
-
-type LoaderItem = {
-  id: string;
-  name: string;
-  version: string;
-  game: string;
-  platform: string;
-  status: LoaderStatus;
-  updatedAt: string;
-  activeKeys: number;
-  downloads: number;
-  notes: string;
 };
 
 type Account = {
@@ -79,9 +70,11 @@ type StaffRow = {
   username: string;
   discordName: string;
   status: 'active' | 'suspended';
+  level: number;
   createdAt: string;
   quotaUsed: number;
   quotaTotal: number;
+  keys: ApiKey[];
 };
 
 type OrderStatus = ApiOrder['status'];
@@ -90,15 +83,15 @@ const TODAY = '2026-08-25T12:00:00.000Z';
 const ADMIN_STORAGE_VERSION = 'empty-v3';
 
 const INITIAL_KEYS: LicenseKey[] = []; /* Intentionally empty: keys are created by the admin. */
-const INITIAL_LOADERS: LoaderItem[] = []; /* Intentionally empty: loaders are created by the admin. */
 const INITIAL_ACCOUNTS: Account[] = []; /* Populated by the backend in the production app. */
 
 const TABS: Array<{ id: PanelTab; label: string; icon: React.ElementType }> = [
   { id: 'overview', label: 'Overview', icon: Activity },
   { id: 'keys', label: 'License Keys', icon: KeyRound },
   { id: 'software', label: 'Software', icon: Package },
-  { id: 'loaders', label: 'Builds', icon: FileCode },
+  { id: 'loader', label: 'Loader', icon: FileCode },
   { id: 'users', label: 'Users', icon: Users },
+  { id: 'archive', label: 'User Archive', icon: Archive },
   { id: 'orders', label: 'Orders', icon: ShoppingCart },
   { id: 'staff', label: 'Staff', icon: ShieldCheck },
 ];
@@ -120,6 +113,7 @@ function randomSegment(length: number): string {
 
 const PLAN_PREVIEW_CODES: Record<string, string> = {
   '1 Day': '1DAY',
+  '2 Days': '2DAY',
   '7 Days': '7DAY',
   '30 Days': '30DAY',
   '90 Days': '90DAY',
@@ -134,7 +128,7 @@ function generateLicenseKey(prefix: string, plan: string): string {
   return `${prefix.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'ARC'}-${planCode}-${randomSegment(4)}-${randomSegment(4)}`;
 }
 
-const PLAN_OPTIONS = ['Lifetime', '1 Day', '7 Days', '30 Days', '90 Days', '1 Year', 'Team', 'Trial'];
+const PLAN_OPTIONS = ['Lifetime', '1 Day', '2 Days', '7 Days', '30 Days', '90 Days', '1 Year', 'Team', 'Trial'];
 const EXPIRY_OPTIONS = [
   { value: 'lifetime', label: 'Never' },
   { value: '1', label: '1 day' },
@@ -163,6 +157,9 @@ function mapApiKey(key: ApiKey): LicenseKey {
     expiresAt: key.expiresAt ?? 'Lifetime',
     status: key.status,
     assignedTo: key.assignedTo ?? undefined,
+    activatedAt: key.activatedAt,
+    createdBy: key.createdBy,
+    source: key.source,
     uses: key.uses,
     maxUses: key.maxUses,
   };
@@ -188,9 +185,11 @@ function mapStaffRow(staff: StaffAccount): StaffRow {
     username: staff.username,
     discordName: staff.discordName || '—',
     status: staff.status,
+    level: staff.level ?? 0,
     createdAt: staff.createdAt,
     quotaUsed: used,
     quotaTotal: total,
+    keys: (staff.keys ?? []) as ApiKey[],
   };
 }
 
@@ -217,6 +216,17 @@ function StatusBadge({ status }: { status: KeyStatus | LoaderStatus | AccountSta
   };
 
   return <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide', styles[status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{labels[status]}</span>;
+}
+
+function KeySourceBadge({ source }: { source: ApiKey['source'] }) {
+  const labels: Record<ApiKey['source'], string> = { owner: 'Owner', staff: 'Staff', roulette: 'Roulette', level: 'Level reward' };
+  const styles: Record<ApiKey['source'], string> = {
+    owner: 'border-violet-500/20 bg-violet-500/10 text-violet-300',
+    staff: 'border-arctic-500/20 bg-arctic-500/10 text-arctic-300',
+    roulette: 'border-amber-500/20 bg-amber-500/10 text-amber-300',
+    level: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300',
+  };
+  return <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold', styles[source])}>{labels[source]}</span>;
 }
 
 function OrderStatusBadge({ status }: { status: OrderStatus }) {
@@ -302,12 +312,13 @@ function Modal({ title, description, icon: Icon, onClose, children }: { title: s
 function KeyTable({ keys, onCopy, onRevoke, onDelete }: { keys: LicenseKey[]; onCopy: (value: string) => void; onRevoke: (id: string) => void; onDelete: (id: string) => void }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[760px] text-left">
+      <table className="w-full min-w-[900px] text-left">
         <thead>
           <tr className="border-b border-frost-800/60 text-[10px] uppercase tracking-widest text-frost-600">
             <th className="px-4 py-3 font-semibold">License key</th>
             <th className="px-4 py-3 font-semibold">Plan</th>
             <th className="px-4 py-3 font-semibold">Category</th>
+            <th className="px-4 py-3 font-semibold">Created by</th>
             <th className="px-4 py-3 font-semibold">Usage</th>
             <th className="px-4 py-3 font-semibold">Expires</th>
             <th className="px-4 py-3 font-semibold">Status</th>
@@ -326,6 +337,7 @@ function KeyTable({ keys, onCopy, onRevoke, onDelete }: { keys: LicenseKey[]; on
               </td>
               <td className="px-4 py-3.5 text-sm text-frost-300">{key.plan}</td>
               <td className="px-4 py-3.5">{key.category ? <span className="inline-flex items-center rounded-full border border-arctic-500/20 bg-arctic-500/10 px-2 py-0.5 text-[10px] font-medium text-arctic-400">{key.category}</span> : <span className="text-xs text-frost-600">—</span>}</td>
+              <td className="px-4 py-3.5"><div className="flex flex-col items-start gap-1"><KeySourceBadge source={key.source} /><span className="max-w-[130px] truncate text-[10px] text-frost-500">{key.createdBy}</span></div></td>
               <td className="px-4 py-3.5">
                 <span className="text-sm font-medium text-frost-200">{key.uses} <span className="text-frost-600">/ {key.maxUses}</span></span>
                 <div className="mt-1 h-1 w-20 overflow-hidden rounded-full bg-frost-800"><div className="h-full rounded-full bg-arctic-500" style={{ width: `${Math.min((key.uses / Math.max(key.maxUses, 1)) * 100, 100)}%` }} /></div>
@@ -344,44 +356,6 @@ function KeyTable({ keys, onCopy, onRevoke, onDelete }: { keys: LicenseKey[]; on
         </tbody>
       </table>
       {keys.length === 0 && <div className="px-6 py-14 text-center text-sm text-frost-500">No license keys match this filter.</div>}
-    </div>
-  );
-}
-
-function LoaderTable({ loaders, onToggle, onDelete }: { loaders: LoaderItem[]; onToggle: (id: string) => void; onDelete: (id: string) => void }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[820px] text-left">
-        <thead>
-          <tr className="border-b border-frost-800/60 text-[10px] uppercase tracking-widest text-frost-600">
-            <th className="px-4 py-3 font-semibold">Software</th>
-            <th className="px-4 py-3 font-semibold">Target</th>
-            <th className="px-4 py-3 font-semibold">Status</th>
-            <th className="px-4 py-3 font-semibold">Active keys</th>
-            <th className="px-4 py-3 font-semibold">Downloads</th>
-            <th className="px-4 py-3 font-semibold">Updated</th>
-            <th className="px-4 py-3 text-right font-semibold">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {loaders.map((loader) => (
-            <tr key={loader.id} className="border-b border-frost-800/30 last:border-0 hover:bg-frost-800/20">
-              <td className="px-4 py-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-arctic-500/20 bg-arctic-500/10 text-arctic-400"><FileCode size={16} /></div>
-                  <div><p className="text-sm font-semibold text-frost-200">{loader.name}</p><p className="mt-0.5 text-[10px] text-frost-600">v{loader.version} · {loader.notes}</p></div>
-                </div>
-              </td>
-              <td className="px-4 py-4"><p className="text-sm text-frost-300">{loader.game}</p><p className="mt-0.5 text-[10px] text-frost-600">{loader.platform}</p></td>
-              <td className="px-4 py-4"><StatusBadge status={loader.status} /></td>
-              <td className="px-4 py-4 text-sm font-medium text-frost-200">{loader.activeKeys}</td>
-              <td className="px-4 py-4 text-sm text-frost-300">{formatNumber(loader.downloads)}</td>
-              <td className="px-4 py-4 text-xs text-frost-500">{formatDate(loader.updatedAt)}</td>
-              <td className="px-4 py-4"><div className="flex justify-end gap-1"><button onClick={() => onToggle(loader.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-arctic-500/10 hover:text-arctic-400" title={loader.status === 'live' ? 'Take offline' : 'Set live'}><RefreshCw size={14} /></button><button onClick={() => onDelete(loader.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete loader"><Trash2 size={14} /></button><button className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="More actions"><MoreHorizontal size={14} /></button></div></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }
@@ -421,41 +395,26 @@ function OrderTable({ orders, onCopy, onFulfill, onReject }: { orders: ApiOrder[
   );
 }
 
-function StaffTable({ staff, onToggleStatus, onDelete, onResetDevice }: { staff: StaffRow[]; onToggleStatus: (id: string) => void; onDelete: (id: string) => void; onResetDevice: (id: string) => void }) {
+function StaffTable({ staff, onToggleStatus, onDelete, onResetDevice, onSetLevel }: { staff: StaffRow[]; onToggleStatus: (id: string) => void; onDelete: (id: string) => void; onResetDevice: (id: string) => void; onSetLevel: (id: string, level: number) => void }) {
+  if (staff.length === 0) return <div className="px-6 py-14 text-center text-sm text-frost-500">No staff accounts yet. Create one to let your team generate keys.</div>;
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[760px] text-left">
-        <thead>
-          <tr className="border-b border-frost-800/60 text-[10px] uppercase tracking-widest text-frost-600">
-            <th className="px-4 py-3 font-semibold">Staff member</th>
-            <th className="px-4 py-3 font-semibold">Discord</th>
-            <th className="px-4 py-3 font-semibold">Quota used</th>
-            <th className="px-4 py-3 font-semibold">Created</th>
-            <th className="px-4 py-3 font-semibold">Status</th>
-            <th className="px-4 py-3 text-right font-semibold">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {staff.map((member) => (
-            <tr key={member.id} className="border-b border-frost-800/30 last:border-0 hover:bg-frost-800/20">
-              <td className="px-4 py-3.5"><div className="flex items-center gap-3"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-arctic-500 to-cyan-500 text-[10px] font-bold text-white">{member.username.slice(0, 2).toUpperCase()}</div><div><p className="text-sm font-medium text-frost-200">{member.username}</p><p className="mt-0.5 text-[10px] text-frost-600">{member.id.slice(0, 14)}</p></div></div></td>
-              <td className="px-4 py-3.5 text-sm text-frost-300">{member.discordName}</td>
-              <td className="px-4 py-3.5">
-                <div className="flex items-center gap-2"><span className="text-sm font-medium text-frost-200">{member.quotaUsed} <span className="text-frost-600">/ {member.quotaTotal}</span></span><div className="h-1 w-16 overflow-hidden rounded-full bg-frost-800"><div className="h-full rounded-full bg-arctic-500" style={{ width: `${Math.min((member.quotaUsed / Math.max(member.quotaTotal, 1)) * 100, 100)}%` }} /></div></div>
-              </td>
-              <td className="px-4 py-3.5 text-xs text-frost-500">{formatDate(member.createdAt)}</td>
-              <td className="px-4 py-3.5"><StatusBadge status={member.status} /></td>
-              <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onToggleStatus(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={member.status === 'suspended' ? 'Reactivate staff account' : 'Suspend staff account'}>{member.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onResetDevice(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-blue-500/10 hover:text-blue-400" title="Reset staff device binding"><RefreshCw size={14} /></button><button onClick={() => onDelete(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete staff account"><Trash2 size={14} /></button></div></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {staff.length === 0 && <div className="px-6 py-14 text-center text-sm text-frost-500">No staff accounts yet. Create one to let your team generate keys.</div>}
+    <div className="space-y-4 p-4">
+      {staff.map((member) => (
+        <section key={member.id} className="rounded-2xl border border-frost-800/60 bg-frost-900/25 p-4">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-arctic-500 to-cyan-500 text-xs font-bold text-white">{member.username.slice(0, 2).toUpperCase()}</div><div><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-frost-100">{member.username}</p><span className="rounded-md border border-arctic-500/20 bg-arctic-500/10 px-2 py-1 text-[10px] font-semibold text-arctic-300">Level {member.level}</span><StatusBadge status={member.status} /></div><p className="mt-1 text-[10px] text-frost-600">{member.discordName} · Created {formatDate(member.createdAt)} · {member.keys.length} keys associated</p></div></div>
+            <div className="flex flex-wrap items-center gap-2"><select value={member.level} onChange={(event) => onSetLevel(member.id, Number(event.target.value))} className="input w-20 px-2 py-1.5 text-[10px]" title="Set staff level">{[0, 1, 2, 3, 4, 5].map((level) => <option key={level} value={level}>Level {level}</option>)}</select><button onClick={() => onToggleStatus(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={member.status === 'suspended' ? 'Reactivate staff account' : 'Suspend staff account'}>{member.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onResetDevice(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-blue-500/10 hover:text-blue-400" title="Reset staff device binding"><RefreshCw size={14} /></button><button onClick={() => onDelete(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete staff account"><Trash2 size={14} /></button></div>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3"><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Normal quota</p><p className="mt-1 text-sm font-semibold text-frost-200">{member.quotaUsed} / {member.quotaTotal}</p></div><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Key ownership</p><p className="mt-1 text-sm font-semibold text-frost-200">{member.keys.length} total</p></div><div className="rounded-xl border border-frost-800/50 bg-frost-950/40 p-3"><p className="text-[10px] uppercase tracking-widest text-frost-600">Attribution</p><p className="mt-1 text-xs text-frost-400">Every key below shows who created or allocated it.</p></div></div>
+          <div className="mt-4 rounded-xl border border-frost-800/50 bg-frost-950/35 p-3"><div className="mb-2 flex items-center justify-between"><p className="text-[10px] font-semibold uppercase tracking-widest text-frost-600">Keys for {member.username}</p><span className="text-[10px] text-frost-600">Grouped by staff member</span></div>{member.keys.length === 0 ? <p className="py-5 text-center text-xs text-frost-600">No keys associated with this staff member yet.</p> : <div className="grid gap-2 lg:grid-cols-2">{member.keys.map((key) => <div key={key.id} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-frost-800/50 bg-frost-900/40 px-3 py-2"><div className="min-w-0"><code className="block truncate text-[10px] text-frost-200">{key.value}</code><p className="mt-1 text-[10px] text-frost-600">{key.plan} · {key.activatedAt ? `Activated ${formatDate(key.activatedAt)}` : 'Unused — expiry has not started'}</p></div><div className="flex shrink-0 flex-col items-end gap-1"><span className="text-[10px] text-arctic-300">{key.createdBy}</span><span className="text-[10px] text-frost-600">{key.source}</span></div></div>)}</div>}</div>
+        </section>
+      ))}
     </div>
   );
 }
 
-function AccountTable({ accounts, onToggleStatus }: { accounts: Account[]; onToggleStatus: (id: string) => void }) {
+function AccountTable({ accounts, onToggleStatus, onReveal }: { accounts: Account[]; onToggleStatus: (id: string) => void; onReveal: (id: string) => void }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[900px] text-left">
@@ -479,7 +438,7 @@ function AccountTable({ accounts, onToggleStatus }: { accounts: Account[]; onTog
                 <td className="px-4 py-3.5"><code className="rounded-lg bg-frost-900/70 px-2.5 py-1.5 text-xs font-medium text-frost-300">{account.password || '—'}</code></td>
                 <td className="px-4 py-3.5 text-xs text-frost-500">{formatDate(account.registeredAt)}</td>
                 <td className="px-4 py-3.5"><div className="flex items-center gap-2"><code className="rounded-lg bg-frost-900/70 px-2.5 py-1.5 text-xs font-medium text-frost-200">{account.key || '—'}</code><span className="text-[10px] font-medium text-arctic-400">{account.plan}</span></div></td>
-                <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onToggleStatus(account.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={account.status === 'suspended' ? 'Reactivate account' : 'Suspend account'}>{account.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="View account"><Eye size={14} /></button><button className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="More actions"><MoreHorizontal size={14} /></button></div></td>
+                <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onToggleStatus(account.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={account.status === 'suspended' ? 'Reactivate account' : 'Suspend account'}>{account.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onReveal(account.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="Reveal password to owner"><Eye size={14} /></button><button className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="More actions"><MoreHorizontal size={14} /></button></div></td>
               </tr>
             );
           })}
@@ -492,7 +451,6 @@ function AccountTable({ accounts, onToggleStatus }: { accounts: Account[]; onTog
 
 const STORAGE_KEYS = {
   keys: 'arctic-admin-license-keys',
-  loaders: 'arctic-admin-loaders',
   accounts: 'arctic-admin-accounts',
 };
 
@@ -517,10 +475,10 @@ function writeStoredList<T>(key: string, value: T[]) {
 export function Keypanel() {
   const [activeTab, setActiveTab] = useState<PanelTab>('overview');
   const [keys, setKeys] = useState<LicenseKey[]>(() => readStoredList(`${STORAGE_KEYS.keys}-${ADMIN_STORAGE_VERSION}`, INITIAL_KEYS));
-  const [loaders, setLoaders] = useState<LoaderItem[]>(() => readStoredList(`${STORAGE_KEYS.loaders}-${ADMIN_STORAGE_VERSION}`, INITIAL_LOADERS));
   const [accounts, setAccounts] = useState<Account[]>(() => readStoredList(`${STORAGE_KEYS.accounts}-${ADMIN_STORAGE_VERSION}`, INITIAL_ACCOUNTS));
   const [staff, setStaff] = useState<StaffRow[]>([]);
   const [orders, setOrders] = useState<ApiOrder[]>([]);
+  const [userArchive, setUserArchive] = useState<UserArchiveEntry[]>([]);
   const [categories, setCategories] = useState<ApiCategory[]>([]);
   const [keySearch, setKeySearch] = useState('');
   const [accountSearch, setAccountSearch] = useState('');
@@ -529,12 +487,16 @@ export function Keypanel() {
   const [accountFilter, setAccountFilter] = useState<'all' | AccountStatus>('all');
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
-  const [showLoaderModal, setShowLoaderModal] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [showSoftwareModal, setShowSoftwareModal] = useState(false);
   const [softwareList, setSoftwareList] = useState<ApiSoftware[]>([]);
-  const [softwareForm, setSoftwareForm] = useState({ name: '', description: '', version: '', game: '', category: '', status: 'draft', downloadUrl: '' });
+  const [loaderReleases, setLoaderReleases] = useState<LoaderRelease[]>([]);
+  const [showLoaderReleaseModal, setShowLoaderReleaseModal] = useState(false);
+  const [loaderReleaseForm, setLoaderReleaseForm] = useState({ version: '', notes: '', current: true });
+  const [loaderReleaseFile, setLoaderReleaseFile] = useState<{ name: string; data: string; size: number } | null>(null);
+  const [generatedKeysForExport, setGeneratedKeysForExport] = useState<string[]>([]);
+  const [softwareForm, setSoftwareForm] = useState({ name: '', description: '', version: '', game: '', category: '', status: 'live', downloadUrl: '' });
   const [softwareFile, setSoftwareFile] = useState<{ name: string; data: string; size: number } | null>(null);
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<ApiOrder | null>(null);
@@ -549,31 +511,35 @@ export function Keypanel() {
     plan: 'Lifetime',
     key: '',
   });
-  const [loaderForm, setLoaderForm] = useState({ name: '', version: '', game: 'Multi-game', platform: 'Windows', notes: '' });
-  const [staffForm, setStaffForm] = useState({ username: '', password: '', discordName: '' });
+  const [staffForm, setStaffForm] = useState({ username: '', password: '', discordName: '', level: '0' });
 
   const syncApiData = async () => {
-    try {
-      const [remoteKeys, remoteUsers, remoteStaff, remoteCategories, remoteOrders, remoteSoftware] = await Promise.all([
-        arcticApi.getKeys(),
-        arcticApi.getUsers(),
-        arcticApi.getStaff(),
-        arcticApi.getCategories(),
-        arcticApi.getOrders(),
-        arcticApi.getSoftware(),
-      ]);
-      setKeys(remoteKeys.map(mapApiKey));
-      setAccounts(remoteUsers.map(mapApiUser));
-      setStaff(remoteStaff.map(mapStaffRow));
-      setCategories(remoteCategories);
-      setOrders(remoteOrders);
-      setSoftwareList(remoteSoftware);
-      setApiOnline(true);
-      return true;
-    } catch {
-      setApiOnline(false);
-      return false;
-    }
+    const results = await Promise.allSettled([
+      arcticApi.getKeys(),
+      arcticApi.getUsers(),
+      arcticApi.getStaff(),
+      arcticApi.getCategories(),
+      arcticApi.getOrders(),
+      arcticApi.getSoftware(),
+      arcticApi.getLoaderReleases(),
+      arcticApi.getUserArchive(),
+    ]);
+    const [keysResult, usersResult, staffResult, categoriesResult, ordersResult, softwareResult, releasesResult, archiveResult] = results;
+
+    // Keep the working sections visible when one newly added endpoint is still
+    // deploying. A single optional failure must not hide real users or staff.
+    if (keysResult.status === 'fulfilled') setKeys(keysResult.value.map(mapApiKey));
+    if (usersResult.status === 'fulfilled') setAccounts(usersResult.value.map(mapApiUser));
+    if (staffResult.status === 'fulfilled') setStaff(staffResult.value.map(mapStaffRow));
+    if (categoriesResult.status === 'fulfilled') setCategories(categoriesResult.value);
+    if (ordersResult.status === 'fulfilled') setOrders(ordersResult.value);
+    if (softwareResult.status === 'fulfilled') setSoftwareList(softwareResult.value);
+    if (releasesResult.status === 'fulfilled') setLoaderReleases(releasesResult.value);
+    if (archiveResult.status === 'fulfilled') setUserArchive(archiveResult.value);
+
+    const hasResponse = results.some((result) => result.status === 'fulfilled');
+    setApiOnline(hasResponse);
+    return hasResponse;
   };
 
   useEffect(() => {
@@ -582,12 +548,11 @@ export function Keypanel() {
 
   useEffect(() => {
     writeStoredList(`${STORAGE_KEYS.keys}-${ADMIN_STORAGE_VERSION}`, keys);
-    writeStoredList(`${STORAGE_KEYS.loaders}-${ADMIN_STORAGE_VERSION}`, loaders);
     writeStoredList(`${STORAGE_KEYS.accounts}-${ADMIN_STORAGE_VERSION}`, accounts);
-  }, [accounts, keys, loaders]);
+  }, [accounts, keys]);
 
   const activeKeys = keys.filter((key) => key.status === 'active').length;
-  const activeLoaders = loaders.filter((loader) => loader.status === 'live').length;
+  const activeLoaders = loaderReleases.filter((release) => release.current && release.status === 'live').length;
   const activeUsers = accounts.filter((account) => account.status === 'active').length;
   const pendingOrders = orders.filter((order) => order.status === 'pending').length;
   const totalActivations = keys.reduce((sum, key) => sum + key.uses, 0);
@@ -614,18 +579,6 @@ export function Keypanel() {
     }
   };
 
-  const exportData = () => {
-    const payload = JSON.stringify({ keys, loaders, accounts, orders, exportedAt: new Date().toISOString() }, null, 2);
-    const blob = new Blob([payload], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'arctic-admin-export.json';
-    anchor.click();
-    URL.revokeObjectURL(url);
-    toast.success('Admin data exported');
-  };
-
   const generateKeys = async () => {
     const quantity = Math.max(Number.parseInt(keyForm.quantity, 10) || 1, 1);
     try {
@@ -637,7 +590,9 @@ export function Keypanel() {
         quantity,
         category: keyForm.category,
       });
-      setKeys((current) => [...generated.map(mapApiKey), ...current]);
+      const generatedKeys = generated.map(mapApiKey);
+      setKeys((current) => [...generatedKeys, ...current]);
+      setGeneratedKeysForExport(generatedKeys.map((key) => key.value));
       setApiOnline(true);
       setShowKeyModal(false);
       setActiveTab('keys');
@@ -645,30 +600,6 @@ export function Keypanel() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not generate license keys');
     }
-  };
-
-  const createLoader = () => {
-    if (!loaderForm.name.trim() || !loaderForm.version.trim()) {
-      toast.error('Software name and version are required');
-      return;
-    }
-    const newLoader: LoaderItem = {
-      id: makeId('loader'),
-      name: loaderForm.name.trim(),
-      version: loaderForm.version.trim(),
-      game: loaderForm.game,
-      platform: loaderForm.platform,
-      status: 'draft',
-      updatedAt: new Date().toISOString(),
-      activeKeys: 0,
-      downloads: 0,
-      notes: loaderForm.notes.trim() || 'New draft build',
-    };
-    setLoaders((current) => [newLoader, ...current]);
-    setLoaderForm({ name: '', version: '', game: 'Multi-game', platform: 'Windows', notes: '' });
-    setShowLoaderModal(false);
-    setActiveTab('loaders');
-    toast.success('Software added as draft');
   };
 
   const createUser = async () => {
@@ -726,16 +657,6 @@ export function Keypanel() {
     }
   };
 
-  const toggleLoader = (id: string) => {
-    setLoaders((current) => current.map((loader) => loader.id === id ? { ...loader, status: loader.status === 'live' ? 'offline' : 'live', updatedAt: new Date().toISOString() } : loader));
-    toast.success('Software status updated');
-  };
-
-  const deleteLoader = (id: string) => {
-    setLoaders((current) => current.filter((loader) => loader.id !== id));
-    toast.success('Software removed');
-  };
-
   const openFulfillOrder = (order: ApiOrder) => {
     setSelectedOrder(order);
     setOrderCategory('');
@@ -773,7 +694,12 @@ export function Keypanel() {
 
   const createSoftware = async () => {
     const name = softwareForm.name.trim();
+    const downloadUrl = softwareForm.downloadUrl.trim();
     if (!name) { toast.error('Software name is required'); return; }
+    if (softwareForm.status === 'live' && !softwareFile && !downloadUrl) {
+      toast.error('Upload a file or add an external download URL before publishing software');
+      return;
+    }
     try {
       const payload: Record<string, unknown> = {
         name,
@@ -782,7 +708,7 @@ export function Keypanel() {
         game: softwareForm.game.trim(),
         category: softwareForm.category.trim(),
         status: softwareForm.status,
-        downloadUrl: softwareForm.downloadUrl.trim(),
+        downloadUrl,
       };
       if (softwareFile) {
         payload.fileData = softwareFile.data;
@@ -791,7 +717,7 @@ export function Keypanel() {
       }
       const created = await arcticApi.createSoftware(payload as any);
       setSoftwareList((current) => [created, ...current]);
-      setSoftwareForm({ name: '', description: '', version: '', game: '', category: '', status: 'draft', downloadUrl: '' });
+      setSoftwareForm({ name: '', description: '', version: '', game: '', category: '', status: 'live', downloadUrl: '' });
       setSoftwareFile(null);
       setShowSoftwareModal(false);
       setActiveTab('software');
@@ -840,6 +766,70 @@ export function Keypanel() {
     reader.readAsDataURL(file);
   };
 
+  const handleLoaderReleaseFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = (reader.result as string).split(',')[1] || '';
+      setLoaderReleaseFile({ name: file.name, data, size: file.size });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const createLoaderRelease = async () => {
+    if (!loaderReleaseForm.version.trim() || !loaderReleaseFile) {
+      toast.error('Version and loader file are required');
+      return;
+    }
+    try {
+      const release = await arcticApi.createLoaderRelease({ version: loaderReleaseForm.version.trim(), notes: loaderReleaseForm.notes.trim(), fileData: loaderReleaseFile.data, fileName: loaderReleaseFile.name, current: loaderReleaseForm.current });
+      setLoaderReleases((current) => [release, ...current.map((item) => loaderReleaseForm.current ? { ...item, current: false, status: 'draft' as const } : item)]);
+      setLoaderReleaseForm({ version: '', notes: '', current: true });
+      setLoaderReleaseFile(null);
+      setShowLoaderReleaseModal(false);
+      setActiveTab('loader');
+      toast.success(`Loader v${release.version} uploaded${release.current ? ' and published' : ''}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not upload loader');
+    }
+  };
+
+  const setCurrentLoader = async (id: string) => {
+    try {
+      const current = await arcticApi.setCurrentLoaderRelease(id);
+      setLoaderReleases((items) => items.map((item) => item.id === current.id ? current : { ...item, current: false, status: 'draft' as const }));
+      toast.success(`Loader v${current.version} is now current`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not publish loader');
+    }
+  };
+
+  const deleteLoaderRelease = async (id: string) => {
+    try {
+      await arcticApi.deleteLoaderRelease(id);
+      setLoaderReleases((items) => items.filter((item) => item.id !== id));
+      toast.success('Loader release deleted');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not delete loader release');
+    }
+  };
+
+  const exportGeneratedKeys = () => {
+    if (generatedKeysForExport.length === 0) {
+      toast.error('Generate keys first');
+      return;
+    }
+    const blob = new Blob([generatedKeysForExport.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'arctic-generated-keys.txt';
+    anchor.click();
+    URL.revokeObjectURL(url);
+    toast.success('Generated keys exported as a plain text list');
+  };
+
   const createStaff = async () => {
     const username = staffForm.username.trim();
     const password = staffForm.password;
@@ -848,15 +838,31 @@ export function Keypanel() {
       return;
     }
     try {
-      const created = await arcticApi.createStaff({ username, password, discordName: staffForm.discordName.trim() });
+      const created = await arcticApi.createStaff({ username, password, discordName: staffForm.discordName.trim(), level: Number(staffForm.level) });
       setStaff((current) => [mapStaffRow(created), ...current]);
+      if (created.rewardKeys?.length) setKeys((current) => [...created.rewardKeys!.map(mapApiKey), ...current]);
       setApiOnline(true);
-      setStaffForm({ username: '', password: '', discordName: '' });
+      setStaffForm({ username: '', password: '', discordName: '', level: '0' });
       setShowStaffModal(false);
       setActiveTab('staff');
       toast.success(`Staff account ${username} created — works on the staff website`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not create staff account');
+    }
+  };
+
+  const setStaffLevel = async (id: string, level: number) => {
+    const member = staff.find((item) => item.id === id);
+    if (!member) return;
+    try {
+      const result = await arcticApi.setStaffLevel(id, level);
+      setStaff((current) => current.map((item) => item.id === id ? mapStaffRow(result.staff) : item));
+      setKeys((current) => [...result.rewardKeys.map(mapApiKey), ...current]);
+      setApiOnline(true);
+      toast.success(`${member.username} is now level ${level}`);
+      if (result.rewardKeys.length > 0) toast.success(`${result.rewardKeys.length} level reward key(s) added`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not change staff level');
     }
   };
 
@@ -930,6 +936,20 @@ export function Keypanel() {
     }
   };
 
+  const revealUserPassword = async (id: string) => {
+    try {
+      const result = await arcticApi.getUserPassword(id);
+      if (!result.password) {
+        toast.error('This password was created before secure owner recovery was enabled and cannot be recovered.');
+        return;
+      }
+      setAccounts((current) => current.map((account) => account.id === id ? { ...account, password: result.password || account.password } : account));
+      toast.success(`Password for ${result.username} revealed to the owner view`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not load password');
+    }
+  };
+
   const toggleAccountStatus = async (id: string) => {
     const account = accounts.find((item) => item.id === id);
     if (!account) return;
@@ -951,10 +971,9 @@ export function Keypanel() {
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           <div className="glass-card xl:col-span-2">
             <SectionHeader icon={Zap} title="Quick actions" detail="Common licensing and distribution controls" />
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <button onClick={() => setShowKeyModal(true)} className="group rounded-xl border border-arctic-500/20 bg-arctic-500/10 p-4 text-left transition-all hover:border-arctic-400/40 hover:bg-arctic-500/15"><div className="mb-5 flex h-9 w-9 items-center justify-center rounded-lg bg-arctic-500/20 text-arctic-400"><KeyRound size={17} /></div><p className="text-sm font-semibold text-frost-100">Generate keys</p><p className="mt-1 text-xs leading-relaxed text-frost-500">Create a single key or a batch with expiry rules.</p><span className="mt-4 inline-flex items-center gap-1 text-xs font-medium text-arctic-400">Open generator <span className="transition-transform group-hover:translate-x-1">→</span></span></button>
-              <button onClick={() => setShowLoaderModal(true)} className="group rounded-xl border border-violet-500/20 bg-violet-500/10 p-4 text-left transition-all hover:border-violet-400/40 hover:bg-violet-500/15"><div className="mb-5 flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/20 text-violet-400"><Package size={17} /></div><p className="text-sm font-semibold text-frost-100">Add software</p><p className="mt-1 text-xs leading-relaxed text-frost-500">Register a new build and publish it when ready.</p><span className="mt-4 inline-flex items-center gap-1 text-xs font-medium text-violet-400">Create draft <span className="transition-transform group-hover:translate-x-1">→</span></span></button>
-              <button onClick={exportData} className="group rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-left transition-all hover:border-emerald-400/40 hover:bg-emerald-500/15"><div className="mb-5 flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400"><Download size={17} /></div><p className="text-sm font-semibold text-frost-100">Export data</p><p className="mt-1 text-xs leading-relaxed text-frost-500">Download keys, loaders, and user records as JSON.</p><span className="mt-4 inline-flex items-center gap-1 text-xs font-medium text-emerald-400">Download export <span className="transition-transform group-hover:translate-x-1">→</span></span></button>
+              <button onClick={() => setShowSoftwareModal(true)} className="group rounded-xl border border-violet-500/20 bg-violet-500/10 p-4 text-left transition-all hover:border-violet-400/40 hover:bg-violet-500/15"><div className="mb-5 flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/20 text-violet-400"><Package size={17} /></div><p className="text-sm font-semibold text-frost-100">Add software</p><p className="mt-1 text-xs leading-relaxed text-frost-500">Register a downloadable entry and publish it when ready.</p><span className="mt-4 inline-flex items-center gap-1 text-xs font-medium text-violet-400">Create entry <span className="transition-transform group-hover:translate-x-1">→</span></span></button>
             </div>
           </div>
 
@@ -977,15 +996,14 @@ export function Keypanel() {
 
           <div className="glass-card xl:col-span-2">
             <SectionHeader icon={Users} title="Recently registered users" detail="Latest users in the control plane" action={<button onClick={() => setActiveTab('users')} className="text-xs font-medium text-arctic-400 hover:text-arctic-300">View all</button>} />
-            <AccountTable accounts={accounts.slice(0, 4)} onToggleStatus={toggleAccountStatus} />
+            <AccountTable accounts={accounts.slice(0, 4)} onToggleStatus={toggleAccountStatus} onReveal={revealUserPassword} />
           </div>
 
           <div className="glass-card">
-            <SectionHeader icon={Server} title="Software status" detail={`${activeLoaders} of ${loaders.length} software live`} action={<button onClick={() => setActiveTab('loaders')} className="text-xs font-medium text-arctic-400 hover:text-arctic-300">Manage</button>} />
+            <SectionHeader icon={Server} title="Distribution status" detail={`${softwareList.filter((item) => item.status === 'live').length} software live · ${activeLoaders} current loader`} action={<button onClick={() => setActiveTab('software')} className="text-xs font-medium text-arctic-400 hover:text-arctic-300">Manage</button>} />
             <div className="space-y-3">
-              {loaders.map((loader) => (
-                <div key={loader.id} className="flex items-center gap-3 rounded-xl border border-frost-800/50 bg-frost-900/30 p-3"><div className={cn('h-2 w-2 rounded-full', loader.status === 'live' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]' : loader.status === 'draft' ? 'bg-arctic-400' : 'bg-frost-600')} /><div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold text-frost-200">{loader.name}</p><p className="mt-0.5 text-[10px] text-frost-600">v{loader.version} · {formatNumber(loader.downloads)} downloads</p></div><StatusBadge status={loader.status} /></div>
-              ))}
+              {softwareList.slice(0, 3).map((software) => <div key={software.id} className="flex items-center gap-3 rounded-xl border border-frost-800/50 bg-frost-900/30 p-3"><div className={cn('h-2 w-2 rounded-full', software.status === 'live' ? 'bg-emerald-400' : 'bg-frost-600')} /><div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold text-frost-200">{software.name}</p><p className="mt-0.5 text-[10px] text-frost-600">v{software.version} · {software.downloads} downloads</p></div><StatusBadge status={software.status} /></div>)}
+              {softwareList.length === 0 && <p className="rounded-xl border border-dashed border-frost-700/40 px-3 py-6 text-center text-xs text-frost-600">No software published yet.</p>}
             </div>
           </div>
         </div>
@@ -1001,11 +1019,20 @@ export function Keypanel() {
       );
     }
 
+    if (activeTab === 'archive') {
+      return (
+        <div className="glass-card overflow-hidden p-0">
+          <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 lg:flex-row lg:items-center lg:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Registered-user archive</h3><p className="mt-1 text-xs text-frost-600">Owner-only recovery list. Every successful registration is recorded here, even if the live user list changes.</p></div><span className="rounded-lg border border-arctic-500/20 bg-arctic-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-arctic-300">{userArchive.length} archived</span></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead><tr className="border-b border-frost-800/60 text-[10px] uppercase tracking-widest text-frost-600"><th className="px-4 py-3 font-semibold">User</th><th className="px-4 py-3 font-semibold">Plan</th><th className="px-4 py-3 font-semibold">Registration key</th><th className="px-4 py-3 font-semibold">Registered</th><th className="px-4 py-3 font-semibold">Archived</th></tr></thead><tbody>{userArchive.map((entry) => <tr key={entry.id} className="border-b border-frost-800/30 last:border-0 hover:bg-frost-800/20"><td className="px-4 py-3.5"><p className="text-sm font-medium text-frost-200">{entry.username}</p><p className="mt-0.5 text-[10px] text-frost-600">{entry.userId}</p></td><td className="px-4 py-3.5 text-xs text-arctic-300">{entry.plan}</td><td className="px-4 py-3.5"><code className="rounded-lg bg-frost-900/70 px-2 py-1.5 text-[10px] text-frost-300">{entry.key}</code></td><td className="px-4 py-3.5 text-xs text-frost-500">{formatDate(entry.registeredAt)}</td><td className="px-4 py-3.5 text-xs text-frost-500">{formatDate(entry.archivedAt)}</td></tr>)}</tbody></table>{userArchive.length === 0 && <div className="px-6 py-14 text-center text-sm text-frost-500">No registrations have been archived yet.</div>}</div>
+        </div>
+      );
+    }
+
     if (activeTab === 'staff') {
       return (
         <div className="glass-card overflow-hidden p-0">
           <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 lg:flex-row lg:items-center lg:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Staff accounts</h3><p className="mt-1 text-xs text-frost-600">Accounts created here can sign in on the staff website and generate keys within their quota.</p></div><button onClick={() => setShowStaffModal(true)} className="btn-primary py-2 text-xs"><UserPlus size={14} /> Add staff</button></div>
-          <StaffTable staff={staff} onToggleStatus={toggleStaffStatus} onDelete={deleteStaff} onResetDevice={resetStaffDevice} />
+          <StaffTable staff={staff} onToggleStatus={toggleStaffStatus} onDelete={deleteStaff} onResetDevice={resetStaffDevice} onSetLevel={setStaffLevel} />
         </div>
       );
     }
@@ -1054,18 +1081,18 @@ export function Keypanel() {
                   ))}
                 </tbody>
               </table>
-              {softwareList.length === 0 && <div className="px-6 py-14 text-center text-sm text-frost-500">No software entries yet. Add your first build to make it available for download.</div>}
+              {softwareList.length === 0 && <div className="px-6 py-14 text-center text-sm text-frost-500">No software entries yet. Add your first software entry to make it available for download.</div>}
             </div>
           </div>
         </div>
       );
     }
 
-    if (activeTab === 'loaders') {
+    if (activeTab === 'loader') {
       return (
         <div className="glass-card overflow-hidden p-0">
-          <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Software registry</h3><p className="mt-1 text-xs text-frost-600">Manage registered builds and their release state.</p></div><button onClick={() => setShowLoaderModal(true)} className="btn-primary py-2 text-xs sm:w-auto"><Plus size={14} /> Add software</button></div>
-          <LoaderTable loaders={loaders} onToggle={toggleLoader} onDelete={deleteLoader} />
+          <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Loader releases</h3><p className="mt-1 text-xs text-frost-600">Upload a loader manually and choose which release is current. The loader checks this endpoint at startup.</p></div><button onClick={() => setShowLoaderReleaseModal(true)} className="btn-primary py-2 text-xs"><Plus size={14} /> Upload loader</button></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[780px] text-left"><thead><tr className="border-b border-frost-800/60 text-[10px] uppercase tracking-widest text-frost-600"><th className="px-4 py-3 font-semibold">Version</th><th className="px-4 py-3 font-semibold">File</th><th className="px-4 py-3 font-semibold">Notes</th><th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 text-right font-semibold">Actions</th></tr></thead><tbody>{loaderReleases.map((release) => <tr key={release.id} className="border-b border-frost-800/30 last:border-0"><td className="px-4 py-4"><p className="text-sm font-semibold text-frost-100">v{release.version}</p><p className="mt-1 text-[10px] text-frost-600">{new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(new Date(release.createdAt))}</p></td><td className="px-4 py-4"><p className="text-xs text-frost-300">{release.originalFileName || '—'}</p><p className="mt-1 text-[10px] text-frost-600">{(release.fileSize / 1024 / 1024).toFixed(1)} MB · {release.downloads} downloads</p></td><td className="max-w-sm px-4 py-4 text-xs text-frost-500">{release.notes || 'No release notes'}</td><td className="px-4 py-4"><StatusBadge status={release.current ? 'live' : 'draft'} /></td><td className="px-4 py-4"><div className="flex justify-end gap-1">{!release.current && <button onClick={() => void setCurrentLoader(release.id)} className="rounded-lg p-2 text-frost-600 hover:bg-emerald-500/10 hover:text-emerald-400" title="Make current"><Check size={14} /></button>}<button onClick={() => void deleteLoaderRelease(release.id)} className="rounded-lg p-2 text-frost-600 hover:bg-red-500/10 hover:text-red-400" title="Delete release"><Trash2 size={14} /></button></div></td></tr>)}</tbody></table>{loaderReleases.length === 0 && <div className="px-6 py-14 text-center text-sm text-frost-500">No loader releases yet. Upload the first one.</div>}</div>
         </div>
       );
     }
@@ -1073,7 +1100,7 @@ export function Keypanel() {
     return (
       <div className="glass-card overflow-hidden p-0">
         <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 lg:flex-row lg:items-center lg:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Registered users</h3><p className="mt-1 text-xs text-frost-600">Every user currently known to this local admin workspace.</p></div><div className="flex flex-col gap-2 sm:flex-row"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-frost-600" /><input value={accountSearch} onChange={(event) => setAccountSearch(event.target.value)} className="input py-2 pl-9 text-xs sm:w-64" placeholder="Search username, password, or key..." /></div><SelectField value={accountFilter} onChange={(value) => setAccountFilter(value as 'all' | AccountStatus)} className="sm:w-32"><option value="all">All status</option><option value="active">Active</option><option value="pending">Pending</option><option value="suspended">Suspended</option></SelectField><button onClick={() => setShowUserModal(true)} className="btn-primary py-2 text-xs"><UserPlus size={14} /> Add user</button></div></div>
-        <AccountTable accounts={filteredAccounts} onToggleStatus={toggleAccountStatus} />
+        <AccountTable accounts={filteredAccounts} onToggleStatus={toggleAccountStatus} onReveal={revealUserPassword} />
       </div>
     );
   };
@@ -1085,12 +1112,12 @@ export function Keypanel() {
           <div>
             <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-arctic-400"><span className="h-1.5 w-1.5 rounded-full bg-arctic-400 shadow-[0_0_8px_rgba(56,189,248,0.8)]" />Admin console <span className="text-frost-700">/</span> License control</div>
             <h1 className="text-2xl font-bold tracking-tight text-frost-50 sm:text-3xl">Software Control Center</h1>
-            <p className="mt-1.5 max-w-2xl text-sm text-frost-500">Manage license keys, registered software builds, and every user in one place.</p>
+            <p className="mt-1.5 max-w-2xl text-sm text-frost-500">Manage license keys, downloadable software, staff, and every registered user in one place.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />Admin session active</span><span className={cn('inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium', apiOnline === true ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : apiOnline === false ? 'border-amber-500/20 bg-amber-500/10 text-amber-400' : 'border-frost-700/50 bg-frost-800/40 text-frost-400')}><span className={cn('h-1.5 w-1.5 rounded-full', apiOnline === true ? 'bg-emerald-400' : apiOnline === false ? 'bg-amber-400' : 'bg-frost-400')} />{apiOnline === true ? 'API connected' : apiOnline === false ? 'API offline' : 'Connecting API...'}</span><button onClick={() => void syncApiData()} className="btn-secondary py-2 text-xs" title="Refresh API data"><RefreshCw size={14} /> Refresh</button><button onClick={exportData} className="btn-secondary py-2 text-xs"><Upload size={14} /> Export</button></div>
+          <div className="flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />Admin session active</span><span className={cn('inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium', apiOnline === true ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : apiOnline === false ? 'border-amber-500/20 bg-amber-500/10 text-amber-400' : 'border-frost-700/50 bg-frost-800/40 text-frost-400')}><span className={cn('h-1.5 w-1.5 rounded-full', apiOnline === true ? 'bg-emerald-400' : apiOnline === false ? 'bg-amber-400' : 'bg-frost-400')} />{apiOnline === true ? 'API connected' : apiOnline === false ? 'API offline' : 'Connecting API...'}</span><button onClick={() => void syncApiData()} className="btn-secondary py-2 text-xs" title="Refresh API data"><RefreshCw size={14} /> Refresh</button></div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4"><MetricCard icon={KeyRound} label="License keys" value={formatNumber(keys.length)} detail={`${activeKeys} active right now`} tone="arctic" /><MetricCard icon={Package} label="Live software" value={`${activeLoaders}/${loaders.length}`} detail="Registered builds" tone="violet" /><MetricCard icon={Users} label="Users" value={formatNumber(accounts.length)} detail={`${activeUsers} active users`} tone="emerald" /><MetricCard icon={Activity} label="Total activations" value={formatNumber(totalActivations)} detail="Across all license keys" tone="amber" /></div>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4"><MetricCard icon={KeyRound} label="License keys" value={formatNumber(keys.length)} detail={`${activeKeys} active right now`} tone="arctic" /><MetricCard icon={Package} label="Live software" value={`${softwareList.filter((item) => item.status === 'live').length}`} detail={`${activeLoaders} current loader release`} tone="violet" /><MetricCard icon={Users} label="Users" value={formatNumber(accounts.length)} detail={`${activeUsers} active users`} tone="emerald" /><MetricCard icon={Activity} label="Total activations" value={formatNumber(totalActivations)} detail="Across all license keys" tone="amber" /></div>
 
         <div className="flex flex-wrap items-center gap-1 rounded-2xl border border-frost-800/50 bg-frost-950/50 p-1.5"><div className="flex min-w-0 flex-1 flex-wrap gap-1">{TABS.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => setActiveTab(id)} className={cn('inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition-all sm:px-4', activeTab === id ? 'bg-arctic-500/15 text-arctic-300 shadow-sm' : 'text-frost-500 hover:bg-frost-800/50 hover:text-frost-200')}><Icon size={14} />{label}{id === 'keys' && <span className="rounded-md bg-frost-800/70 px-1.5 py-0.5 text-[10px] text-frost-500">{keys.length}</span>}{id === 'users' && <span className="rounded-md bg-frost-800/70 px-1.5 py-0.5 text-[10px] text-frost-500">{accounts.length}</span>}{id === 'orders' && <span className={cn('rounded-md px-1.5 py-0.5 text-[10px]', pendingOrders > 0 ? 'bg-amber-500/15 text-amber-400' : 'bg-frost-800/70 text-frost-500')}>{pendingOrders}</span>}</button>)}</div><div className="hidden items-center gap-2 px-3 text-[10px] text-frost-600 lg:flex"><Calendar size={13} /> Updated {formatDate(TODAY)}</div></div>
 
@@ -1115,7 +1142,7 @@ export function Keypanel() {
             <div><label className="label">Key prefix</label><input value={keyForm.prefix} onChange={(event) => setKeyForm({ ...keyForm, prefix: event.target.value })} className="input text-sm uppercase" maxLength={6} /><p className="mt-1.5 text-[10px] text-frost-600">Preview: {keyForm.prefix.toUpperCase() || 'ARC'}-{PLAN_PREVIEW_CODES[keyForm.plan] ?? 'PRO'}-XXXX-XXXX</p></div>
             <div><label className="label">Category</label><SelectField value={keyForm.category} onChange={(value) => setKeyForm({ ...keyForm, category: value })}><option value="">No category</option>{categories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}</SelectField><p className="mt-1.5 text-[10px] text-frost-600">Labels this batch, e.g. a reseller name, to keep keys clean and sorted.</p></div>
           </div>
-          <div className="flex gap-2 border-t border-frost-800/60 px-5 py-4"><button onClick={() => setShowKeyModal(false)} className="btn-secondary flex-1 text-xs">Cancel</button><button onClick={generateKeys} className="btn-primary flex-1 text-xs"><KeyRound size={14} /> Generate keys</button></div>
+          <div className="flex flex-wrap gap-2 border-t border-frost-800/60 px-5 py-4"><button onClick={() => setShowKeyModal(false)} className="btn-secondary flex-1 text-xs">Cancel</button>{generatedKeysForExport.length > 0 && <button onClick={exportGeneratedKeys} className="btn-secondary flex-1 text-xs"><Download size={14} /> Export generated</button>}<button onClick={generateKeys} className="btn-primary flex-1 text-xs"><KeyRound size={14} /> Generate keys</button></div>
         </Modal>
       )}
 
@@ -1174,7 +1201,8 @@ export function Keypanel() {
               <input value={staffForm.discordName} onChange={(event) => setStaffForm({ ...staffForm, discordName: event.target.value })} className="input text-sm" placeholder="e.g. max.mustermann" />
               <p className="mt-1.5 text-[10px] text-frost-600">Appears in the Discord order message when this staff member orders keys.</p>
             </div>
-            <div className="rounded-xl border border-arctic-500/15 bg-arctic-500/5 px-3 py-2.5 text-xs text-frost-400"><ShieldCheck size={13} className="mr-1.5 inline text-arctic-400" />Quota: 5× 1 Day · 3× 7 Days · 2× 30 Days · 1× 90 Days · 1× 1 Year · 1× Lifetime</div>
+            <div><label className="label">Starting level</label><SelectField value={staffForm.level} onChange={(value) => setStaffForm({ ...staffForm, level: value })}>{[0, 1, 2, 3, 4, 5].map((level) => <option key={level} value={level}>Level {level}</option>)}</SelectField><p className="mt-1.5 text-[10px] text-frost-600">Rewards are granted once when a staff member reaches a new level.</p></div>
+            <div className="rounded-xl border border-arctic-500/15 bg-arctic-500/5 px-3 py-2.5 text-xs text-frost-400"><ShieldCheck size={13} className="mr-1.5 inline text-arctic-400" />Standard quota: 5× 1 Day · 3× 7 Days · 2× 30 Days · 1× 90 Days · 1× 1 Year · 1× Lifetime</div>
           </div>
           <div className="flex gap-2 border-t border-frost-800/60 px-5 py-4">
             <button onClick={() => setShowStaffModal(false)} className="btn-secondary flex-1 text-xs">Cancel</button>
@@ -1204,10 +1232,15 @@ export function Keypanel() {
         </Modal>
       )}
 
-      {showLoaderModal && (
-        <Modal title="Add software build" description="Register a build in the software registry as a draft." icon={Package} onClose={() => setShowLoaderModal(false)}>
-          <div className="space-y-4 p-5"><div className="grid grid-cols-2 gap-3"><div><label className="label">Software name *</label><input autoFocus value={loaderForm.name} onChange={(event) => setLoaderForm({ ...loaderForm, name: event.target.value })} className="input text-sm" placeholder="e.g. Arctic Core" /></div><div><label className="label">Version *</label><input value={loaderForm.version} onChange={(event) => setLoaderForm({ ...loaderForm, version: event.target.value })} className="input text-sm" placeholder="e.g. 2.5.0" /></div></div><div className="grid grid-cols-2 gap-3"><div><label className="label">Target</label><SelectField value={loaderForm.game} onChange={(value) => setLoaderForm({ ...loaderForm, game: value })}><option>Multi-game</option><option>Game client</option><option>Legacy</option><option>Internal</option></SelectField></div><div><label className="label">Platform</label><SelectField value={loaderForm.platform} onChange={(value) => setLoaderForm({ ...loaderForm, platform: value })}><option>Windows</option><option>Linux</option><option>macOS</option></SelectField></div></div><div><label className="label">Release notes</label><textarea value={loaderForm.notes} onChange={(event) => setLoaderForm({ ...loaderForm, notes: event.target.value })} className="input min-h-24 resize-y text-sm" placeholder="What changed in this build?" /></div></div>
-          <div className="flex gap-2 border-t border-frost-800/60 px-5 py-4"><button onClick={() => setShowLoaderModal(false)} className="btn-secondary flex-1 text-xs">Cancel</button><button onClick={createLoader} className="btn-primary flex-1 text-xs"><Plus size={14} /> Add software</button></div>
+      {showLoaderReleaseModal && (
+        <Modal title="Upload loader release" description="Upload a Windows loader and decide whether it is the current release." icon={FileCode} onClose={() => { setShowLoaderReleaseModal(false); setLoaderReleaseFile(null); }}>
+          <div className="space-y-4 p-5">
+            <div><label className="label">Version *</label><input autoFocus value={loaderReleaseForm.version} onChange={(event) => setLoaderReleaseForm({ ...loaderReleaseForm, version: event.target.value })} className="input text-sm" placeholder="e.g. 2.6.0" /></div>
+            <div><label className="label">Release notes</label><textarea value={loaderReleaseForm.notes} onChange={(event) => setLoaderReleaseForm({ ...loaderReleaseForm, notes: event.target.value })} className="input min-h-20 resize-y text-sm" placeholder="What changed?" /></div>
+            <label className="flex items-center gap-2 text-xs text-frost-300"><input type="checkbox" checked={loaderReleaseForm.current} onChange={(event) => setLoaderReleaseForm({ ...loaderReleaseForm, current: event.target.checked })} /> Make this the current release immediately</label>
+            <div className="relative"><input type="file" accept=".exe" onChange={handleLoaderReleaseFile} className="absolute inset-0 cursor-pointer opacity-0" /><div className="flex items-center gap-3 rounded-xl border border-dashed border-frost-700/50 bg-frost-900/30 px-4 py-4"><Upload size={18} className="text-frost-500" /><div><p className="text-xs font-medium text-frost-300">{loaderReleaseFile ? loaderReleaseFile.name : 'Choose Arctic.exe'}</p>{loaderReleaseFile && <p className="mt-0.5 text-[10px] text-frost-600">{(loaderReleaseFile.size / 1024 / 1024).toFixed(1)} MB</p>}</div></div></div>
+          </div>
+          <div className="flex gap-2 border-t border-frost-800/60 px-5 py-4"><button onClick={() => { setShowLoaderReleaseModal(false); setLoaderReleaseFile(null); }} className="btn-secondary flex-1 text-xs">Cancel</button><button onClick={() => void createLoaderRelease()} className="btn-primary flex-1 text-xs"><Upload size={14} /> Upload release</button></div>
         </Modal>
       )}
 

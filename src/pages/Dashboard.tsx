@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Monitor, Cpu, Zap, Clock, TrendingUp, Grid3x3,
-  Upload, Settings, Activity,
+  Settings, Activity,
   ChevronRight, Snowflake,
 } from 'lucide-react';
 import { useStore } from '../store';
@@ -51,7 +51,9 @@ function StatCard({ icon: Icon, label, value, sub, color = 'arctic', trend }: {
 const ACTIVITY: Array<{ icon: string; text: string; time: string; color: string }> = [];
 
 export function Dashboard() {
-  const { device, setPage } = useStore();
+  const { device, analytics, setPage } = useStore();
+  const connected = device.status === 'connected';
+  const todayUsage = analytics.dailyUsage[analytics.dailyUsage.length - 1]?.count ?? 0;
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="p-6 space-y-6">
       {/* Hero */}
@@ -65,11 +67,11 @@ export function Dashboard() {
         <div className="relative flex items-center justify-between flex-wrap gap-4">
           <div>
             <p className="text-frost-500 text-sm mb-1">Welcome back</p>
-            <h1 className="text-3xl font-bold text-frost-50">Syntx</h1>
-            <p className="text-frost-400 mt-1.5">Your ARCTIC setup is ready.</p>
+            <h1 className="text-3xl font-bold text-frost-50">ARCTIC workspace</h1>
+            <p className="text-frost-400 mt-1.5">Live control-plane data only — no demo activity is shown.</p>
             <div className="flex items-center gap-2 mt-3">
-              <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
-              <span className="text-sm text-emerald-400 font-medium">All systems operational</span>
+              <div className={cn('w-2 h-2 rounded-full', connected ? 'bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(52,211,153,0.8)]' : 'bg-amber-400')} />
+              <span className={cn('text-sm font-medium', connected ? 'text-emerald-400' : 'text-amber-400')}>{connected ? 'Device connected' : 'No device connected'}</span>
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -87,9 +89,9 @@ export function Dashboard() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-        <StatCard icon={Monitor} label="Device Status" value="Connected" sub="ARCTIC Keypanel" color="emerald" />
-        <StatCard icon={Zap} label="Total Actions" value="0" sub="No activity yet" color="violet" />
-        <StatCard icon={Activity} label="Today" value="0" sub="No activity yet" color="amber" />
+        <StatCard icon={Monitor} label="Device Status" value={connected ? 'Connected' : 'Disconnected'} sub="ARCTIC Keypanel" color={connected ? 'emerald' : 'amber'} />
+        <StatCard icon={Zap} label="Total Actions" value={formatNumber(analytics.totalKeyPresses)} sub="Recorded locally" color="violet" />
+        <StatCard icon={Activity} label="Today" value={formatNumber(todayUsage)} sub="Recorded locally" color="amber" />
       </div>
 
       {/* Main grid */}
@@ -108,22 +110,15 @@ export function Dashboard() {
           <div className="space-y-3">
             {[
               { label: 'Device', value: device.name },
-              { label: 'Firmware', value: device.firmware, badge: 'Update available', badgeColor: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+              { label: 'Firmware', value: device.firmware },
               { label: 'Connection', value: device.connection.toUpperCase() },
               { label: 'Polling Rate', value: `${device.pollingRate}Hz` },
               { label: 'Temperature', value: `${device.temperature}°C` },
               { label: 'Storage', value: `${device.storage.used}/${device.storage.total} KB` },
-            ].map(({ label, value, badge, badgeColor }) => (
+            ].map(({ label, value }) => (
               <div key={label} className="flex items-center justify-between">
                 <span className="text-xs text-frost-500">{label}</span>
-                <div className="flex items-center gap-2">
-                  {badge && (
-                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full border', badgeColor)}>
-                      {badge}
-                    </span>
-                  )}
-                  <span className="text-xs text-frost-200 font-medium font-mono">{value}</span>
-                </div>
+                <span className="text-xs text-frost-200 font-medium font-mono">{value}</span>
               </div>
             ))}
           </div>
@@ -149,7 +144,7 @@ export function Dashboard() {
               <Activity size={16} className="text-arctic-400" />
               <span className="font-semibold text-frost-200 text-sm">Recent Activity</span>
             </div>
-            <span className="text-xs text-frost-600">Live</span>
+            <span className="text-xs text-frost-600">Real events only</span>
           </div>
           {ACTIVITY.length === 0 ? (
             <div className="rounded-xl border border-dashed border-frost-700/40 px-4 py-8 text-center text-xs text-frost-600">No activity yet</div>
@@ -173,10 +168,9 @@ export function Dashboard() {
           <Zap size={16} className="text-arctic-400" />
           <span className="font-semibold text-frost-200 text-sm">Quick Actions</span>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
           {[
             { label: 'Open Keypanel', icon: Grid3x3, page: 'keypanel', color: 'bg-arctic-500/10 border-arctic-500/20 hover:bg-arctic-500/20' },
-            { label: 'Import Config', icon: Upload, page: 'settings', color: 'bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20' },
             { label: 'Device Settings', icon: Settings, page: 'device', color: 'bg-frost-800/50 border-frost-700/30 hover:bg-frost-700/50' },
           ].map(({ label, icon: Icon, page, color }) => (
             <motion.button

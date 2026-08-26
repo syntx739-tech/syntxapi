@@ -26,9 +26,9 @@ ARCTIC_PUBLIC_API_URL=https://your-public-api-domain.example
 
 The webhook URL previously shared in chat should be rotated before use. Keep the replacement in `local.env`; never put it in the React frontend or commit it.
 
-## Staff website
+## 2in1 website and loader
 
-The API also serves the separate staff website build (folder `STAFF WEBSITE`).
+The 2in1 build contains the owner keypanel and staff console in one upload. The old separate staff/build sites are obsolete and should not be deployed.
 
 - Admin creates staff accounts on the main keypanel (Staff tab).
 - Staff sign in via `POST /api/staff/login`.
@@ -66,7 +66,9 @@ Keys are generated with `category` in the body of `POST /api/admin/keys`. Keys k
 ## Production requirements
 
 - Use HTTPS.
-- Set `ARCTIC_ALLOWED_ORIGIN` to the exact keypanel origin.
-- Keep `server/data` outside the public web root.
-- Replace the JSON file store with MySQL or PostgreSQL for multi-instance hosting.
-- Use a Node-capable host; InfinityFree free hosting cannot run this API reliably for desktop clients.
+- Set `ARCTIC_ALLOWED_ORIGIN` to the exact 2in1 website origin.
+- Configure durable persistence before production. On Render attach a persistent disk mounted at `/var/data` and set `ARCTIC_DATA_DIR=/var/data`, or set `ARCTIC_SUPABASE_URL` and `ARCTIC_SUPABASE_SERVICE_KEY`.
+- Set `ARCTIC_ERROR_WEBHOOK_URL` for loader diagnostics and `ARCTIC_KEY_PING_WEBHOOK_URL` for the formatted first-activation notification. Keep both webhook URLs server-side; never put them in the website or loader binary.
+- The loader checks `GET /api/health` and `GET /api/loader/latest` at startup, downloads `GET /api/loader/download` when a newer version exists, and posts diagnostics to `POST /api/loader/error`.
+- Registration activates a key once and sends the key-ping embed; later logins reuse the account's stored key and do not require entering it again.
+- Use a Node-capable host; static Wasmer hosting is only for the built `2in1 WEBSITE` folder and cannot persist API data.

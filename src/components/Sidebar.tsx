@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Grid3x3, BarChart3, Settings,
   ChevronLeft, ChevronRight, Snowflake, Wifi, HelpCircle,
-  Circle, AlertTriangle, Download,
+  Circle, AlertTriangle, Download, Info,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useStore, type AppPage } from '../store';
@@ -20,6 +20,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'keypanel', label: 'Keypanel', icon: Grid3x3 },
   { id: 'downloads', label: 'Downloads', icon: Download },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+  { id: 'staff-info', label: 'Staff Information', icon: Info },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 

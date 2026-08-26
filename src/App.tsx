@@ -13,6 +13,7 @@ import { Analytics } from './pages/Analytics';
 import { SettingsPage } from './pages/Settings';
 import { Device } from './pages/Device';
 import { DownloadsPage } from './pages/Downloads';
+import { StaffInformation } from './pages/StaffInformation';
 import { arcticApi } from './lib/api';
 import { applyThemeColors } from './lib/themeColors';
 
@@ -23,6 +24,7 @@ const PAGE_COMPONENTS = {
   analytics: Analytics,
   settings: SettingsPage,
   device: Device,
+  'staff-info': StaffInformation,
 } as const;
 
 export default function App() {

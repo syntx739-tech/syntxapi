@@ -10,9 +10,11 @@ import { useStore } from '../store';
 const PAGE_LABELS: Record<string, string> = {
   dashboard: 'Dashboard',
   keypanel: 'Keypanel',
+  downloads: 'Downloads',
   analytics: 'Analytics',
   settings: 'Settings',
   device: 'Device Manager',
+  'staff-info': 'Staff Information',
 };
 
 type TopbarProps = {
