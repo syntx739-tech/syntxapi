@@ -1,5 +1,5 @@
 const API_BASE_URL = (typeof window !== 'undefined' && window.localStorage.getItem('arctic-api-url'))
-  || 'https://yanking-applicant-eligibly.ngrok-free.dev';
+  || 'https://syntxapi.onrender.com';
 const SESSION_STORAGE_KEY = 'arctic-admin-session';
 const DEVICE_STORAGE_KEY = 'arctic-admin-device-id';
 
@@ -56,6 +56,8 @@ export type StaffAccount = {
   status: 'active' | 'suspended';
   createdAt: string;
   createdBy: string | null;
+  deviceId: string | null;
+  deviceBoundAt: string | null;
   quota: {
     entries: Array<{ plan: string; limit: number; used: number; remaining: number }>;
     totals: { used: number };
@@ -221,5 +223,8 @@ export const arcticApi = {
   }),
   deleteStaff: (id: string) => request<void>(`/api/admin/staff/${encodeURIComponent(id)}`, {
     method: 'DELETE',
+  }),
+  resetStaffDevice: (id: string) => request<{ message: string }>(`/api/admin/staff/${encodeURIComponent(id)}/reset-device`, {
+    method: 'POST',
   }),
 };

@@ -462,16 +462,91 @@ function staffPlanExpiry(plan, createdAt) {
   return new Date(new Date(createdAt).getTime() + days * 86400000).toISOString();
 }
 
+async function sendStaffDeviceResetWebhook(username, token) {
+  if (!DISCORD_WEBHOOK_URL || !PUBLIC_API_URL) return false;
+  const approvalUrl = `${PUBLIC_API_URL}/api/staff/device-reset/approve?token=${encodeURIComponent(token)}`;
+  const payload = {
+    content: `ARCTIC device reset requested for staff **${username}**.`,
+    embeds: [{
+      title: 'ARCTIC staff device reset',
+      description: 'Approve this request if a staff member needs access from a new device.',
+      color: 5814783,
+      fields: [{ name: 'Staff Account', value: username, inline: true }, { name: 'Expires', value: '10 minutes', inline: true }],
+    }],
+    components: [{
+      type: 1,
+      components: [{ type: 2, style: 5, label: 'Approve staff device reset', url: approvalUrl }],
+    }],
+  };
+  const webhookUrl = DISCORD_WEBHOOK_URL.includes('?')
+    ? `${DISCORD_WEBHOOK_URL}&with_components=true`
+    : `${DISCORD_WEBHOOK_URL}?with_components=true`;
+  try {
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function createStaffDeviceResetRequest(username, deviceId) {
+  if (!DISCORD_WEBHOOK_URL || !PUBLIC_API_URL) return { sent: false, configured: false };
+  const token = crypto.randomBytes(32).toString('hex');
+  database.resetRequests = database.resetRequests.filter((item) => item.expiresAt > Date.now() && !item.usedAt);
+  database.resetRequests.push({
+    tokenHash: sha256(token),
+    username: `staff:${username}`,
+    deviceId,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + RESET_TTL_MS,
+    usedAt: null,
+  });
+  saveData();
+  try {
+    const sent = await sendStaffDeviceResetWebhook(username, token);
+    if (!sent) {
+      database.resetRequests = database.resetRequests.filter((item) => item.tokenHash !== sha256(token));
+      saveData();
+    }
+    return { sent, configured: true };
+  } catch {
+    database.resetRequests = database.resetRequests.filter((item) => item.tokenHash !== sha256(token));
+    saveData();
+    return { sent: false, configured: true };
+  }
+}
+
 async function handleStaffLogin(request, response) {
   const input = await body(request);
   const username = String(input.username || '').trim();
   const password = String(input.password || '');
+  const deviceId = String(input.deviceId || '').trim();
   const user = findStaffUser(username);
   if (!user || !verifyPassword(password, user.passwordHash)) {
     return json(response, 401, { error: 'Invalid staff credentials.', code: 'INVALID_CREDENTIALS' });
   }
   if (user.status !== 'active') {
     return json(response, 403, { error: 'This staff account is not active.', code: 'STAFF_SUSPENDED' });
+  }
+  if (!user.deviceId) {
+    user.deviceId = deviceId;
+    user.deviceBoundAt = new Date().toISOString();
+    saveData();
+  } else if (user.deviceId !== deviceId) {
+    const reset = await createStaffDeviceResetRequest(user.username, deviceId);
+    if (!reset.sent) {
+      return json(response, 423, {
+        error: reset.configured
+          ? 'This device is not authorized and the Discord reset message could not be sent.'
+          : 'This device is not authorized. Configure the Discord reset webhook on the API server.',
+        code: reset.configured ? 'RESET_DELIVERY_FAILED' : 'RESET_NOT_CONFIGURED',
+      });
+    }
+    return json(response, 423, { error: 'This device is not authorized. A reset approval link was sent to Discord.', code: 'DEVICE_LOCKED' });
   }
   const sessionToken = crypto.randomBytes(32).toString('base64url');
   staffSessions.set(sessionToken, { userId: user.id, username: user.username, expiresAt: Date.now() + SESSION_TTL_MS });
@@ -623,6 +698,25 @@ async function handle(request, response) {
     database.resetRequests = database.resetRequests.filter((item) => item !== requestItem);
     saveData();
     return html(response, 200, resetApprovalPage('Device reset approved', 'The next successful login will bind the new browser device.', true));
+  }
+
+  if (request.method === 'GET' && pathname === '/api/staff/device-reset/approve') {
+    const token = String(url.searchParams.get('token') || '');
+    const requestItem = database.resetRequests.find((item) => item.tokenHash === sha256(token) && !item.usedAt);
+    if (!requestItem || requestItem.expiresAt <= Date.now()) {
+      return html(response, 410, resetApprovalPage('Link expired', 'This staff device reset link is no longer valid.', false));
+    }
+    const staffUsername = String(requestItem.username || '').replace(/^staff:/, '');
+    const staffUser = findStaffUser(staffUsername);
+    if (staffUser) {
+      staffUser.deviceId = null;
+      staffUser.deviceBoundAt = null;
+      saveData();
+    }
+    requestItem.usedAt = Date.now();
+    database.resetRequests = database.resetRequests.filter((item) => item !== requestItem);
+    saveData();
+    return html(response, 200, resetApprovalPage('Staff device reset approved', `Device reset for ${staffUsername} approved. The next login will bind the new device.`, true));
   }
 
   if (pathname.startsWith('/api/admin/') && !adminAuthorized(request)) {
@@ -808,6 +902,16 @@ async function handle(request, response) {
       database.staffUsers.splice(index, 1);
       saveData();
       return empty(response);
+    }
+
+    const staffResetDevice = pathname.match(/^\/api\/admin\/staff\/([^/]+)\/reset-device$/);
+    if (request.method === 'POST' && staffResetDevice) {
+      const user = database.staffUsers.find((item) => item.id === decodeURIComponent(staffResetDevice[1]));
+      if (!user) return json(response, 404, { error: 'Staff account not found.' });
+      user.deviceId = null;
+      user.deviceBoundAt = null;
+      saveData();
+      return json(response, 200, { message: 'Staff device reset. The next login will bind the new device.' });
     }
 
     if (request.method === 'GET' && pathname === '/api/admin/me') {

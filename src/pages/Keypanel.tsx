@@ -420,7 +420,7 @@ function OrderTable({ orders, onCopy, onFulfill, onReject }: { orders: ApiOrder[
   );
 }
 
-function StaffTable({ staff, onToggleStatus, onDelete }: { staff: StaffRow[]; onToggleStatus: (id: string) => void; onDelete: (id: string) => void }) {
+function StaffTable({ staff, onToggleStatus, onDelete, onResetDevice }: { staff: StaffRow[]; onToggleStatus: (id: string) => void; onDelete: (id: string) => void; onResetDevice: (id: string) => void }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[760px] text-left">
@@ -444,7 +444,7 @@ function StaffTable({ staff, onToggleStatus, onDelete }: { staff: StaffRow[]; on
               </td>
               <td className="px-4 py-3.5 text-xs text-frost-500">{formatDate(member.createdAt)}</td>
               <td className="px-4 py-3.5"><StatusBadge status={member.status} /></td>
-              <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onToggleStatus(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={member.status === 'suspended' ? 'Reactivate staff account' : 'Suspend staff account'}>{member.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onDelete(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete staff account"><Trash2 size={14} /></button></div></td>
+              <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onToggleStatus(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-amber-500/10 hover:text-amber-400" title={member.status === 'suspended' ? 'Reactivate staff account' : 'Suspend staff account'}>{member.status === 'suspended' ? <Check size={14} /> : <Ban size={14} />}</button><button onClick={() => onResetDevice(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-blue-500/10 hover:text-blue-400" title="Reset staff device binding"><RefreshCw size={14} /></button><button onClick={() => onDelete(member.id)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-red-500/10 hover:text-red-400" title="Delete staff account"><Trash2 size={14} /></button></div></td>
             </tr>
           ))}
         </tbody>
@@ -811,6 +811,18 @@ export function Keypanel() {
     }
   };
 
+  const resetStaffDevice = async (id: string) => {
+    const member = staff.find((item) => item.id === id);
+    if (!member) return;
+    try {
+      await arcticApi.resetStaffDevice(id);
+      setApiOnline(true);
+      toast.success(`Device binding reset for ${member.username}. They can log in from any device now.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not reset device binding');
+    }
+  };
+
   const createCategory = async () => {
     const name = newCategoryName.trim();
     if (!name) {
@@ -917,7 +929,7 @@ export function Keypanel() {
       return (
         <div className="glass-card overflow-hidden p-0">
           <div className="flex flex-col gap-3 border-b border-frost-800/60 p-4 lg:flex-row lg:items-center lg:justify-between"><div><h3 className="text-sm font-semibold text-frost-100">Staff accounts</h3><p className="mt-1 text-xs text-frost-600">Accounts created here can sign in on the staff website and generate keys within their quota.</p></div><button onClick={() => setShowStaffModal(true)} className="btn-primary py-2 text-xs"><UserPlus size={14} /> Add staff</button></div>
-          <StaffTable staff={staff} onToggleStatus={toggleStaffStatus} onDelete={deleteStaff} />
+          <StaffTable staff={staff} onToggleStatus={toggleStaffStatus} onDelete={deleteStaff} onResetDevice={resetStaffDevice} />
         </div>
       );
     }

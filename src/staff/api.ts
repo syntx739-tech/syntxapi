@@ -1,5 +1,5 @@
 const API_BASE_URL = (typeof window !== 'undefined' && window.localStorage.getItem('arctic-api-url'))
-  || 'https://yanking-applicant-eligibly.ngrok-free.dev';
+  || 'https://syntxapi.onrender.com';
 const SESSION_STORAGE_KEY = 'arctic-staff-session';
 
 export type StaffQuotaEntry = {
@@ -69,6 +69,17 @@ function getSessionToken(): string {
   return window.localStorage.getItem(SESSION_STORAGE_KEY) ?? '';
 }
 
+function getDeviceId(): string {
+  if (typeof window === 'undefined') return '';
+  const existing = window.localStorage.getItem('arctic-staff-device-id');
+  if (existing) return existing;
+  const generated = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  window.localStorage.setItem('arctic-staff-device-id', generated);
+  return generated;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('Content-Type', 'application/json');
@@ -107,7 +118,7 @@ export const staffApi = {
   getStoredSessionToken: getSessionToken,
   login: (username: string, password: string) => request<{ sessionToken: string; expiresAt: string; user: StaffUser }>('/api/staff/login', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, deviceId: getDeviceId() }),
   }).then((result) => {
     window.localStorage.setItem(SESSION_STORAGE_KEY, result.sessionToken);
     return result;

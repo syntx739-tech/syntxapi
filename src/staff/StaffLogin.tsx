@@ -20,6 +20,10 @@ export function StaffLogin({ onAuthenticated }: Props) {
     } catch (reason) {
       if (reason instanceof ArcticApiError && reason.code === 'STAFF_SUSPENDED') {
         setError('This staff account is suspended. Contact the owner.');
+      } else if (reason instanceof ArcticApiError && reason.code === 'DEVICE_LOCKED') {
+        setError('This device is not authorized. Check Discord and approve the device reset request.');
+      } else if (reason instanceof ArcticApiError && reason.code === 'RESET_NOT_CONFIGURED') {
+        setError('This device is not authorized. Configure the Discord reset webhook on the API server.');
       } else {
         setError(reason instanceof Error ? reason.message : 'Login failed.');
       }
