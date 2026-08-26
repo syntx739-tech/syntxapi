@@ -49,7 +49,7 @@ function OrderStatusBadge({ status }: { status: StaffOrder['status'] }) {
   return <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide', styles[status])}><span className="h-1.5 w-1.5 rounded-full bg-current" />{labels[status]}</span>;
 }
 
-function QuotaCard({ plan, used, limit, remaining, onGenerate }: { plan: string; used: number; limit: number; remaining: number; onGenerate: () => void }) {
+function QuotaCard({ plan, used, limit, remaining, orderKeys, onGenerate }: { plan: string; used: number; limit: number; remaining: number; orderKeys: number; onGenerate: () => void }) {
   const pct = limit > 0 ? (used / limit) * 100 : 0;
   const exhausted = remaining <= 0;
   return (
@@ -65,8 +65,9 @@ function QuotaCard({ plan, used, limit, remaining, onGenerate }: { plan: string;
       <p className="mt-4 text-lg font-bold tracking-tight text-frost-100">{plan}</p>
       <div className="mt-2 flex items-baseline gap-1">
         <span className="text-2xl font-bold text-frost-200">{used}</span>
-        <span className="text-sm text-frost-600">/ {limit} used</span>
+        <span className="text-sm text-frost-600">/ {limit} generated</span>
       </div>
+      {orderKeys > 0 && <p className="mt-1 text-[10px] text-purple-400">+ {orderKeys} from orders</p>}
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-frost-800">
         <div className={cn('h-full rounded-full', exhausted ? 'bg-amber-400' : 'bg-arctic-500')} style={{ width: `${Math.min(pct, 100)}%` }} />
       </div>
@@ -82,7 +83,14 @@ function QuotaCard({ plan, used, limit, remaining, onGenerate }: { plan: string;
   );
 }
 
-function KeyTable({ keys, onCopy }: { keys: StaffKey[]; onCopy: (value: string) => void }) {
+function SourceBadge({ source }: { source: string }) {
+  if (source === 'owner') {
+    return <span className="inline-flex items-center gap-1 rounded-full border border-purple-500/20 bg-purple-500/10 px-2 py-0.5 text-[10px] font-semibold text-purple-300"><Package size={10} /> Order</span>;
+  }
+  return <span className="inline-flex items-center gap-1 rounded-full border border-arctic-500/20 bg-arctic-500/10 px-2 py-0.5 text-[10px] font-semibold text-arctic-300"><KeyRound size={10} /> Generated</span>;
+}
+
+function KeyTable({ keys, onCopy, showSource = false }: { keys: StaffKey[]; onCopy: (value: string) => void; showSource?: boolean }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[680px] text-left">
@@ -90,6 +98,7 @@ function KeyTable({ keys, onCopy }: { keys: StaffKey[]; onCopy: (value: string) 
           <tr className="border-b border-frost-800/60 text-[10px] uppercase tracking-widest text-frost-600">
             <th className="px-4 py-3 font-semibold">License key</th>
             <th className="px-4 py-3 font-semibold">Plan</th>
+            {showSource && <th className="px-4 py-3 font-semibold">Source</th>}
             <th className="px-4 py-3 font-semibold">Expires</th>
             <th className="px-4 py-3 font-semibold">Status</th>
             <th className="px-4 py-3 text-right font-semibold">Actions</th>
@@ -106,6 +115,7 @@ function KeyTable({ keys, onCopy }: { keys: StaffKey[]; onCopy: (value: string) 
                 <p className="mt-1 text-[10px] text-frost-600">Created {formatDate(key.createdAt)}</p>
               </td>
               <td className="px-4 py-3.5 text-sm text-frost-300">{key.plan}</td>
+              {showSource && <td className="px-4 py-3.5"><SourceBadge source={key.source || 'staff'} /></td>}
               <td className="px-4 py-3.5 text-xs text-frost-400">{formatDate(key.expiresAt)}</td>
               <td className="px-4 py-3.5"><StatusBadge status={key.status} /></td>
               <td className="px-4 py-3.5"><div className="flex justify-end gap-1"><button onClick={() => onCopy(key.value)} className="rounded-lg p-2 text-frost-600 transition-colors hover:bg-frost-800 hover:text-frost-300" title="Copy"><Copy size={14} /></button></div></td>
@@ -150,9 +160,9 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
   }, []);
 
   const quotaByPlan = useMemo(() => {
-    const map = new Map<string, { used: number; limit: number; remaining: number }>();
+    const map = new Map<string, { used: number; limit: number; remaining: number; orderKeys: number }>();
     for (const entry of quota?.entries ?? []) {
-      map.set(entry.plan, { used: entry.used, limit: entry.limit, remaining: entry.remaining });
+      map.set(entry.plan, { used: entry.used, limit: entry.limit, remaining: entry.remaining, orderKeys: entry.orderKeys || 0 });
     }
     return map;
   }, [quota]);
@@ -222,6 +232,9 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
   };
 
   const cartTotal = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+  const selfGeneratedKeys = useMemo(() => keys.filter((k) => k.source !== 'owner'), [keys]);
+  const orderKeys = useMemo(() => keys.filter((k) => k.source === 'owner'), [keys]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-frost-950">
@@ -316,6 +329,7 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
                           used={entry.used}
                           limit={entry.limit}
                           remaining={entry.remaining}
+                          orderKeys={entry.orderKeys}
                           onGenerate={() => { setGeneratePlan(plan); setGenerateQty('1'); }}
                         />
                       );
@@ -357,12 +371,15 @@ export function StaffPanel({ staffUsername, onLogout }: { staffUsername: string;
                   <div className="glass-card overflow-hidden p-0">
                     <div className="flex items-center justify-between border-b border-frost-800/60 p-4">
                       <div>
-                        <h3 className="text-sm font-semibold text-frost-100">Generated keys</h3>
-                        <p className="mt-1 text-xs text-frost-600">Keys you issued with your staff account.</p>
+                        <h3 className="text-sm font-semibold text-frost-100">All keys</h3>
+                        <p className="mt-1 text-xs text-frost-600">Keys you issued plus keys delivered from your orders.</p>
                       </div>
-                      <span className="rounded-md bg-frost-800/70 px-2 py-1 text-[10px] text-frost-400">{keys.length} total</span>
+                      <div className="flex items-center gap-2">
+                        <span className="flex items-center gap-1 rounded-md border border-arctic-500/20 bg-arctic-500/10 px-2 py-1 text-[10px] font-semibold text-arctic-300"><KeyRound size={10} /> {selfGeneratedKeys.length} generated</span>
+                        <span className="flex items-center gap-1 rounded-md border border-purple-500/20 bg-purple-500/10 px-2 py-1 text-[10px] font-semibold text-purple-300"><Package size={10} /> {orderKeys.length} from orders</span>
+                      </div>
                     </div>
-                    <KeyTable keys={keys} onCopy={copyToClipboard} />
+                    <KeyTable keys={keys} onCopy={copyToClipboard} showSource />
                   </div>
                 </div>
               ) : (

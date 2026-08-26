@@ -422,15 +422,29 @@ function staffUsedQuota(staffId) {
   return counts;
 }
 
+// Keys allocated to this staff user via fulfilled orders, grouped by plan.
+function staffOrderKeyCount(staffId) {
+  const counts = {};
+  for (const key of database.keys) {
+    if (key.allocatedToStaffId === staffId && key.plan) {
+      counts[key.plan] = (counts[key.plan] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
 function staffQuota(staffId) {
   const used = staffUsedQuota(staffId);
+  const orderCounts = staffOrderKeyCount(staffId);
+  const totalOrderKeys = Object.values(orderCounts).reduce((sum, value) => sum + value, 0);
   const entries = Object.entries(STAFF_KEY_QUOTA).map(([plan, limit]) => ({
     plan,
     limit,
     used: used[plan] || 0,
     remaining: Math.max(limit - (used[plan] || 0), 0),
+    orderKeys: orderCounts[plan] || 0,
   }));
-  return { entries, totals: { used: Object.values(used).reduce((sum, value) => sum + value, 0) } };
+  return { entries, totals: { used: Object.values(used).reduce((sum, value) => sum + value, 0), orderKeys: totalOrderKeys } };
 }
 
 async function sendStaffOrderWebhook(order) {

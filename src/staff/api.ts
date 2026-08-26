@@ -7,11 +7,12 @@ export type StaffQuotaEntry = {
   limit: number;
   used: number;
   remaining: number;
+  orderKeys: number;
 };
 
 export type StaffQuota = {
   entries: StaffQuotaEntry[];
-  totals: { used: number };
+  totals: { used: number; orderKeys: number };
 };
 
 export type StaffUser = {
