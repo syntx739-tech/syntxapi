@@ -606,7 +606,6 @@ function getAdminSession(request) {
     sessions.delete(token);
     return null;
   }
-  if (!database.admin?.deviceId || session.deviceId !== database.admin.deviceId) return null;
   return { token, ...session };
 }
 
@@ -955,8 +954,6 @@ async function handleStaffLogin(request, response) {
   const input = await body(request);
   const username = String(input.username || '').trim();
   const password = String(input.password || '');
-  const deviceId = String(input.deviceId || '').trim();
-  if (!deviceId) return json(response, 400, { error: 'A device identifier is required.', code: 'DEVICE_ID_REQUIRED' });
   const user = findStaffUser(username);
   if (!user || !verifyPassword(password, user.passwordHash)) {
     return json(response, 401, { error: 'Invalid staff credentials.', code: 'INVALID_CREDENTIALS' });
@@ -964,22 +961,7 @@ async function handleStaffLogin(request, response) {
   if (user.status !== 'active') {
     return json(response, 403, { error: 'This staff account is not active.', code: 'STAFF_SUSPENDED' });
   }
-  if (!user.deviceId) {
-    user.deviceId = deviceId;
-    user.deviceBoundAt = new Date().toISOString();
-    saveData();
-  } else if (user.deviceId !== deviceId) {
-    const reset = await createStaffDeviceResetRequest(user.username, deviceId);
-    if (!reset.sent) {
-      return json(response, 423, {
-        error: reset.configured
-          ? 'This device is not authorized and the Discord reset message could not be sent.'
-          : 'This device is not authorized. Configure the Discord reset webhook on the API server.',
-        code: reset.configured ? 'RESET_DELIVERY_FAILED' : 'RESET_NOT_CONFIGURED',
-      });
-    }
-    return json(response, 423, { error: 'This device is not authorized. A reset approval link was sent to Discord.', code: 'DEVICE_LOCKED' });
-  }
+  // No device binding. Any device with valid credentials may log in.
   const sessionToken = crypto.randomBytes(32).toString('base64url');
   staffSessions.set(sessionToken, { userId: user.id, username: user.username, expiresAt: Date.now() + SESSION_TTL_MS });
   persistSessions();
@@ -1070,25 +1052,9 @@ async function handleAdminLogin(request, response) {
   }
   clearLoginFailures(attemptKey);
 
-  if (!database.admin.deviceId) {
-    database.admin.deviceId = deviceId;
-    database.admin.deviceBoundAt = new Date().toISOString();
-    saveData();
-  } else if (database.admin.deviceId !== deviceId) {
-    const reset = await createDeviceResetRequest(database.admin.username, deviceId);
-    if (!reset.sent) {
-      return json(response, 423, {
-        error: reset.configured
-          ? 'This browser is not authorized and the Discord reset message could not be sent.'
-          : 'This browser is not authorized. Configure the Discord reset webhook on the API server.',
-        code: reset.configured ? 'RESET_DELIVERY_FAILED' : 'RESET_NOT_CONFIGURED',
-      });
-    }
-    return json(response, 423, { error: 'This browser is not authorized. A reset approval link was sent to Discord.', code: 'DEVICE_LOCKED' });
-  }
-
+  // No device binding. Any browser/device with valid credentials may log in.
   const sessionToken = crypto.randomBytes(32).toString('base64url');
-  sessions.set(sessionToken, { username: database.admin.username, deviceId, expiresAt: Date.now() + SESSION_TTL_MS });
+  sessions.set(sessionToken, { username: database.admin.username, expiresAt: Date.now() + SESSION_TTL_MS });
   persistSessions();
   return json(response, 200, {
     sessionToken,
